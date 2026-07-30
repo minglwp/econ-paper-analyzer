@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#ffffff">
+  <title>经管论文数据处理器</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand-block">
+        <div class="brand-mark" aria-hidden="true">E</div>
+        <div>
+          <h1>经管论文数据处理器</h1>
+          <p id="datasetContext">新分析</p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <span class="local-status"><span aria-hidden="true"></span>本地运行</span>
+        <button class="button button-quiet" type="button" id="resetButton">重新开始</button>
+      </div>
+    </header>
+
+    <nav class="step-nav" aria-label="分析步骤">
+      <button class="step-tab is-active" type="button" data-step-target="upload" aria-current="step">
+        <span class="step-number">1</span><span>导入数据</span>
+      </button>
+      <button class="step-tab" type="button" data-step-target="variables" disabled>
+        <span class="step-number">2</span><span>量表与变量</span>
+      </button>
+      <button class="step-tab" type="button" data-step-target="analysis" disabled>
+        <span class="step-number">3</span><span>分析设置</span>
+      </button>
+      <button class="step-tab" type="button" data-step-target="results" disabled>
+        <span class="step-number">4</span><span>运行与结果</span>
+      </button>
+    </nav>
+
+    <main class="main-content">
+      <section class="step-panel is-active" id="step-upload" data-step="upload" aria-labelledby="uploadTitle">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">步骤 1</p>
+            <h2 id="uploadTitle">导入数据</h2>
+          </div>
+          <div class="heading-meta" id="uploadState">CSV / XLSX</div>
+        </div>
+
+        <div class="upload-zone" id="uploadZone">
+          <input type="file" id="fileInput" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
+          <div class="upload-symbol" aria-hidden="true">↑</div>
+          <div class="upload-copy">
+            <strong id="fileLabel">选择数据文件</strong>
+            <span id="fileMeta">CSV 或 XLSX，最大 100 MB</span>
+          </div>
+          <div class="upload-actions">
+            <button class="button button-quiet" type="button" id="demoButton">载入示例</button>
+            <button class="button button-secondary" type="button" id="chooseFileButton">选择文件</button>
+            <button class="button button-primary" type="button" id="uploadButton" disabled>上传</button>
+          </div>
+        </div>
+        <div class="inline-alert is-hidden" id="uploadError" role="alert"></div>
+
+        <div class="data-review is-hidden" id="dataReview">
+          <div class="review-toolbar">
+            <div>
+              <h3>数据概览</h3>
+              <span id="dataCaption"></span>
+            </div>
+            <label class="compact-field is-hidden" id="sheetField">
+              <span>工作表</span>
+              <select id="sheetSelect"></select>
+            </label>
+          </div>
+
+          <dl class="stat-strip" id="qualityStats"></dl>
+
+          <div class="quality-layout">
+            <div class="quality-panel">
+              <div class="subheading-row">
+                <h3>字段质量</h3>
+                <span id="columnCount"></span>
+              </div>
+              <div class="column-list" id="columnQuality"></div>
+            </div>
+            <div class="quality-panel">
+              <div class="subheading-row">
+                <h3>数据提示</h3>
+                <span id="warningCount"></span>
+              </div>
+              <ul class="diagnostic-list" id="dataWarnings"></ul>
+            </div>
+          </div>
+
+          <div class="preview-panel">
+            <div class="subheading-row">
+              <h3>数据预览</h3>
+              <span>前 8 行</span>
+            </div>
+            <div class="table-scroll">
+              <table id="previewTable">
+                <thead></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="step-actions">
+            <span></span>
+            <button class="button button-primary" type="button" data-next-step="variables">配置量表与变量 <span aria-hidden="true">→</span></button>
+          </div>
+        </div>
+      </section>
+
+      <section class="step-panel" id="step-variables" data-step="variables" aria-labelledby="variablesTitle" hidden>
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">步骤 2</p>
+            <h2 id="variablesTitle">量表与变量</h2>
+          </div>
+          <button class="button button-secondary" type="button" id="addScaleButton"><span aria-hidden="true">＋</span> 添加量表</button>
+        </div>
+
+        <div class="workspace-grid scale-workspace">
+          <div class="workspace-main">
+            <div class="subheading-row section-divider-heading">
+              <div>
+                <h3>量表构建</h3>
+                <span id="scaleCount">0 个量表</span>
+              </div>
+            </div>
+            <div class="scale-list" id="scaleList"></div>
+            <div class="empty-state" id="scaleEmpty">
+              <span aria-hidden="true">＋</span>
+              <strong>尚未添加量表</strong>
+            </div>
+          </div>
+
+          <aside class="workspace-aside variable-panel" aria-labelledby="rolesTitle">
+            <div class="subheading-row section-divider-heading">
+              <h3 id="rolesTitle">变量角色</h3>
+              <span>模型变量</span>
+            </div>
+            <div class="field-stack">
+              <label class="field required-field">
+                <span>自变量 X</span>
+                <select id="roleX" required></select>
+              </label>
+              <label class="field required-field">
+                <span>因变量 Y</span>
+                <select id="roleY" required></select>
+              </label>
+              <label class="field">
+                <span>中介变量 M</span>
+                <select id="roleM"></select>
+              </label>
+              <label class="field">
+                <span>调节变量 W</span>
+                <select id="roleW"></select>
+              </label>
+              <label class="field">
+                <span>控制变量</span>
+                <select id="roleControls" multiple size="6"></select>
+              </label>
+            </div>
+          </aside>
+        </div>
+
+        <div class="inline-alert is-hidden" id="variableError" role="alert"></div>
+        <div class="step-actions">
+          <button class="button button-quiet" type="button" data-prev-step="upload"><span aria-hidden="true">←</span> 返回</button>
+          <button class="button button-primary" type="button" id="variablesNext">设置分析方案 <span aria-hidden="true">→</span></button>
+        </div>
+      </section>
+
+      <section class="step-panel" id="step-analysis" data-step="analysis" aria-labelledby="analysisTitle" hidden>
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">步骤 3</p>
+            <h2 id="analysisTitle">分析设置</h2>
+          </div>
+          <span class="selection-count" id="analysisCount">0 项分析</span>
+        </div>
+
+        <div class="analysis-layout">
+          <div class="analysis-block">
+            <div class="section-divider-heading">
+              <h3>分析项目</h3>
+            </div>
+            <div class="toggle-list" id="analysisToggles">
+              <label class="toggle-row">
+                <span><strong>验证性因子分析</strong><small>CFA</small></span>
+                <input type="checkbox" name="analysis" value="cfa" checked>
+              </label>
+              <label class="toggle-row">
+                <span><strong>Harman 单因子检验</strong><small>降维法</small></span>
+                <input type="checkbox" name="analysis" value="harman" checked>
+              </label>
+              <label class="toggle-row">
+                <span><strong>未测量潜在方法因子</strong><small>ULMC</small></span>
+                <input type="checkbox" name="analysis" value="ulmc" checked>
+              </label>
+              <label class="toggle-row">
+                <span><strong>描述性统计与相关</strong><small>均值、标准差与相关矩阵</small></span>
+                <input type="checkbox" name="analysis" value="descriptives" checked>
+              </label>
+              <label class="toggle-row">
+                <span><strong>回归分析</strong><small>主效应模型</small></span>
+                <input type="checkbox" name="analysis" value="regression" checked>
+              </label>
+              <label class="toggle-row">
+                <span><strong>中介回归与效应检验</strong><small>间接效应</small></span>
+                <input type="checkbox" name="analysis" value="mediation" checked>
+              </label>
+              <label class="toggle-row">
+                <span><strong>调节回归与效应检验</strong><small>交互项与简单斜率图</small></span>
+                <input type="checkbox" name="analysis" value="moderation" checked>
+              </label>
+              <label class="toggle-row">
+                <span><strong>被调节的中介效应</strong><small>条件间接效应</small></span>
+                <input type="checkbox" name="analysis" value="moderated_mediation" checked>
+              </label>
+            </div>
+          </div>
+
+          <div class="settings-column">
+            <div class="analysis-block">
+              <div class="section-divider-heading">
+                <h3>模型设置</h3>
+              </div>
+              <fieldset class="segmented-field" id="stageFieldset">
+                <legend>调节阶段</legend>
+                <div class="segmented-control">
+                  <label><input type="radio" name="moderatedStage" value="first" checked><span>第一阶段</span></label>
+                  <label><input type="radio" name="moderatedStage" value="second"><span>第二阶段</span></label>
+                </div>
+              </fieldset>
+              <label class="field">
+                <span>相关系数</span>
+                <select id="correlationMethod">
+                  <option value="pearson">Pearson</option>
+                  <option value="spearman">Spearman</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Harman 判定阈值（%）</span>
+                <input type="number" id="harmanThreshold" value="40" min="0" max="100" step="1">
+              </label>
+            </div>
+
+            <div class="analysis-block">
+              <div class="section-divider-heading">
+                <h3>统计推断</h3>
+              </div>
+              <div class="form-grid two-columns">
+                <label class="field">
+                  <span>显著性水平 α</span>
+                  <input type="number" id="alphaInput" value="0.05" min="0.001" max="0.499" step="0.01">
+                </label>
+                <label class="field">
+                  <span>Bootstrap 次数</span>
+                  <input type="number" id="bootstrapInput" value="5000" min="200" max="20000" step="100">
+                </label>
+                <label class="field">
+                  <span>随机种子</span>
+                  <input type="number" id="seedInput" value="20260730" step="1">
+                </label>
+                <label class="field">
+                  <span>置信区间</span>
+                  <select id="ciMethod">
+                    <option value="bca">BCa</option>
+                    <option value="percentile">Percentile</option>
+                  </select>
+                </label>
+                <label class="field full-span">
+                  <span>标准误</span>
+                  <select id="robustSe">
+                    <option value="HC3">HC3 稳健标准误</option>
+                    <option value="classical">经典标准误</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="inline-alert is-hidden" id="analysisError" role="alert"></div>
+        <div class="step-actions">
+          <button class="button button-quiet" type="button" data-prev-step="variables"><span aria-hidden="true">←</span> 返回</button>
+          <button class="button button-primary" type="button" id="runAnalysisButton"><span aria-hidden="true">▶</span> 开始分析</button>
+        </div>
+      </section>
+
+      <section class="step-panel" id="step-results" data-step="results" aria-labelledby="resultsTitle" hidden>
+        <div class="section-heading result-heading">
+          <div>
+            <p class="eyebrow">步骤 4</p>
+            <h2 id="resultsTitle">运行与结果</h2>
+          </div>
+          <span class="job-badge is-running" id="jobBadge">等待任务</span>
+        </div>
+
+        <div class="job-progress" id="jobProgress">
+          <div class="progress-copy">
+            <div>
+              <strong id="progressTitle">正在创建分析任务</strong>
+              <span id="progressMessage">准备数据与模型参数</span>
+            </div>
+            <span id="progressPercent">0%</span>
+          </div>
+          <div class="progress-track" role="progressbar" aria-label="分析进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <span id="progressBar"></span>
+          </div>
+          <ol class="run-log" id="runLog" aria-live="polite"></ol>
+        </div>
+
+        <div class="inline-alert is-hidden" id="jobError" role="alert"></div>
+
+        <div class="result-workspace is-hidden" id="resultWorkspace">
+          <div class="result-tabs" role="tablist" aria-label="分析结果">
+            <button type="button" id="result-tab-summary" role="tab" aria-selected="true" aria-controls="result-summary" data-result-tab="summary">结果摘要</button>
+            <button type="button" id="result-tab-diagnostics" role="tab" aria-selected="false" aria-controls="result-diagnostics" data-result-tab="diagnostics" tabindex="-1">模型诊断</button>
+            <button type="button" id="result-tab-artifacts" role="tab" aria-selected="false" aria-controls="result-artifacts" data-result-tab="artifacts" tabindex="-1">文件下载 <span id="artifactCount"></span></button>
+          </div>
+          <div class="result-tab-panel is-active" id="result-summary" data-result-panel="summary" role="tabpanel" aria-labelledby="result-tab-summary">
+            <div class="result-content" id="resultSummary"></div>
+          </div>
+          <div class="result-tab-panel" id="result-diagnostics" data-result-panel="diagnostics" role="tabpanel" aria-labelledby="result-tab-diagnostics" hidden>
+            <div class="result-content" id="resultDiagnostics"></div>
+          </div>
+          <div class="result-tab-panel" id="result-artifacts" data-result-panel="artifacts" role="tabpanel" aria-labelledby="result-tab-artifacts" hidden>
+            <div class="artifact-list" id="artifactList"></div>
+          </div>
+        </div>
+
+        <div class="step-actions result-actions">
+          <button class="button button-quiet" type="button" id="backToSettings"><span aria-hidden="true">←</span> 返回设置</button>
+          <button class="button button-secondary is-hidden" type="button" id="rerunButton"><span aria-hidden="true">↻</span> 重新运行</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <template id="scaleTemplate">
+    <article class="scale-editor">
+      <div class="scale-editor-head">
+        <div class="scale-index">量表 <span></span></div>
+        <button class="icon-button remove-scale" type="button" title="删除量表" aria-label="删除量表">×</button>
+      </div>
+      <div class="scale-fields">
+        <label class="field scale-name-field">
+          <span>构念名称</span>
+          <input type="text" class="scale-name" maxlength="64" placeholder="例如：工作投入" required>
+        </label>
+        <label class="field item-field">
+          <span>量表题项</span>
+          <select class="scale-items" multiple size="7" required></select>
+        </label>
+        <label class="field item-field">
+          <span>反向题项</span>
+          <select class="scale-reverse-items" multiple size="7"></select>
+        </label>
+        <div class="range-fields">
+          <label class="field">
+            <span>最小值</span>
+            <input type="number" class="scale-min" value="1" step="1" required>
+          </label>
+          <label class="field">
+            <span>最大值</span>
+            <input type="number" class="scale-max" value="5" step="1" required>
+          </label>
+        </div>
+      </div>
+      <div class="scale-validation" role="status"></div>
+    </article>
+  </template>
+
+  <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

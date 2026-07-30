@@ -1,0 +1,4 @@
+-r requirements-dev.txt
+pyinstaller>=6.21,<7
+pyinstaller-hooks-contrib>=2026.6,<2027
+pillow>=11,<13

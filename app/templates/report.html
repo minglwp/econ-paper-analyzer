@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>经管论文数据分析报告</title>
+  <style>
+    :root { --ink:#20262d; --muted:#67717d; --line:#dfe3e8; --green:#176b5b; --red:#a63d31; --paper:#fff; --wash:#f4f6f7; }
+    * { box-sizing:border-box; }
+    body { margin:0; color:var(--ink); background:var(--wash); font-family:"PingFang SC","Microsoft YaHei",Arial,sans-serif; font-size:14px; line-height:1.6; }
+    main { width:min(1180px, calc(100% - 40px)); margin:28px auto 60px; background:var(--paper); border:1px solid var(--line); }
+    header { padding:30px 34px 24px; border-bottom:3px solid var(--green); }
+    h1 { margin:0 0 6px; font-size:26px; letter-spacing:0; }
+    h2 { margin:0 0 16px; font-size:19px; }
+    h3 { margin:18px 0 10px; font-size:15px; }
+    p { margin:7px 0; }
+    section { padding:24px 34px; border-bottom:1px solid var(--line); }
+    .meta { color:var(--muted); }
+    .grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-top:18px; }
+    .metric { border-left:3px solid var(--green); padding:8px 12px; background:#f7faf9; }
+    .metric b { display:block; font-size:18px; }
+    .metric span { color:var(--muted); font-size:12px; }
+    .table-wrap { overflow:auto; border:1px solid var(--line); }
+    table { width:100%; border-collapse:collapse; white-space:nowrap; }
+    th,td { padding:8px 10px; border-bottom:1px solid var(--line); text-align:right; }
+    th:first-child,td:first-child { text-align:left; }
+    th { background:#eef2f2; font-weight:600; position:sticky; top:0; }
+    .note,.warning { padding:10px 12px; margin:12px 0; border-left:3px solid #b68a2a; background:#fffaf0; }
+    .error { color:var(--red); background:#fff5f3; border-left:3px solid var(--red); padding:10px 12px; }
+    .ok { color:var(--green); }
+    .plot { display:block; width:min(800px,100%); margin:16px auto; border:1px solid var(--line); }
+    footer { padding:20px 34px; color:var(--muted); font-size:12px; }
+    @media (max-width:760px) { main{width:100%;margin:0;border:0}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}header,section{padding:20px} }
+    @media print { body{background:#fff}main{width:100%;margin:0;border:0}.table-wrap{overflow:visible}section{break-inside:avoid}.plot{max-height:600px} }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>经管论文数据分析报告</h1>
+    <p class="meta">运行编号 {{ results.run_id }} · {{ results.created_at }} · 数据 SHA-256 {{ results.data_sha256 }}</p>
+    <div class="grid">
+      <div class="metric"><b>{{ results.data_quality.input_rows }}</b><span>原始样本</span></div>
+      <div class="metric"><b>{{ results.config.inference.bootstrap_samples }}</b><span>Bootstrap 次数</span></div>
+      <div class="metric"><b>{{ results.config.inference.confidence_interval|upper }}</b><span>置信区间方法</span></div>
+      <div class="metric"><b>{{ results.errors|length }}</b><span>模块错误</span></div>
+    </div>
+  </header>
+
+  <section>
+    <h2>数据与方法说明</h2>
+    {% for note in results.data_quality.notes %}<p class="note">{{ note }}</p>{% endfor %}
+    {% for error in results.errors %}<p class="error">{{ error }}</p>{% endfor %}
+    <p>本工具首版面向横截面、单层、独立观测和连续型结果变量。统计显著不等同于实际重要性，横截面间接效应不自动构成因果机制。</p>
+  </section>
+
+  {% if results.cfa %}<section><h2>验证性因子分析（CFA）</h2>
+    {% if results.cfa.status == 'ok' %}{{ tables.cfa_fit|safe }}<h3>标准化载荷</h3>{{ tables.cfa_loadings|safe }}<h3>信度与聚合效度</h3>{{ tables.reliability|safe }}<h3>区分效度（HTMT）</h3>{{ tables.htmt|safe }}
+      {% for note in results.cfa.notes %}<p class="note">{{ note }}</p>{% endfor %}
+    {% else %}<p class="error">{{ results.cfa.error }}</p>{% endif %}</section>{% endif %}
+
+  {% if results.harman %}<section><h2>共同方法偏差：Harman 降维检验</h2>
+    {% if results.harman.status == 'ok' %}{{ tables.harman|safe }}<h3>KMO 与 Bartlett 检验</h3>{{ tables.harman_diagnostics|safe }}<p>{{ results.harman.interpretation }}</p><p class="note">PCA 第一主成分比例只能用于风险筛查，不能证明共同方法偏差不存在。</p>
+    {% else %}<p class="error">{{ results.harman.error }}</p>{% endif %}</section>{% endif %}
+
+  {% if results.ulmc %}<section><h2>共同方法偏差：ULMC</h2>
+    {% if results.ulmc.status == 'ok' %}{{ tables.ulmc|safe }}<h3>模型比较</h3>{{ tables.ulmc_comparison|safe }}<h3>方法因子载荷</h3>{{ tables.ulmc_loadings|safe }}{% for note in results.ulmc.notes %}<p class="note">{{ note }}</p>{% endfor %}
+    {% else %}<p class="error">{{ results.ulmc.error }}</p>{% endif %}</section>{% endif %}
+
+  {% if results.descriptives %}<section><h2>描述性统计</h2>{{ tables.descriptives|safe }}</section>{% endif %}
+  {% if results.correlations %}<section><h2>相关分析</h2><p class="meta">方法：{{ results.correlations.method }}</p>{{ tables.correlations|safe }}</section>{% endif %}
+
+  {% if results.regression %}<section><h2>回归分析</h2>
+    {% if results.regression.status == 'ok' %}<h3>模型摘要与诊断</h3>{{ tables.regression_fit|safe }}<h3>回归系数</h3>{{ tables.regression|safe }}<h3>多重共线性</h3>{{ tables.regression_vif|safe }}{% else %}<p class="error">{{ results.regression.error }}</p>{% endif %}</section>{% endif %}
+
+  {% if results.mediation %}<section><h2>中介效应检验</h2>
+    {% if results.mediation.status == 'ok' %}<h3>效应分解与 Bootstrap 区间</h3>{{ tables.mediation|safe }}<h3>模型摘要</h3>{{ tables.mediation_fit|safe }}<h3>路径回归</h3>{{ tables.mediation_regression|safe }}<p>{{ results.mediation.interpretation }}</p><p class="note">{{ results.mediation.causal_note }}</p>
+    {% else %}<p class="error">{{ results.mediation.error }}</p>{% endif %}</section>{% endif %}
+
+  {% if results.moderation %}<section><h2>调节效应检验</h2>
+    {% if results.moderation.status == 'ok' %}<p>{{ results.moderation.interpretation }}</p><h3>层级模型摘要</h3>{{ tables.moderation_fit|safe }}<h3>调节回归系数</h3>{{ tables.moderation_regression|safe }}<h3>简单斜率</h3>{{ tables.moderation|safe }}<h3>Johnson–Neyman 边界</h3><p class="meta">W 的观测范围：{{ results.moderation.observed_moderator_range[0]|fmt }} 至 {{ results.moderation.observed_moderator_range[1]|fmt }}</p>{{ tables.johnson_neyman|safe }}<img class="plot" src="moderation_plot.png" alt="调节效应图">
+    {% else %}<p class="error">{{ results.moderation.error }}</p>{% endif %}</section>{% endif %}
+
+  {% if results.moderated_mediation %}<section><h2>被调节的中介效应</h2>
+    {% if results.moderated_mediation.status == 'ok' %}<p class="meta">{{ results.moderated_mediation.template }}</p><h3>条件间接效应与指数</h3>{{ tables.moderated_mediation|safe }}<h3>模型摘要</h3>{{ tables.moderated_mediation_fit|safe }}<h3>路径回归</h3>{{ tables.moderated_mediation_regression|safe }}<p>{{ results.moderated_mediation.interpretation }}</p><p class="note">{{ results.moderated_mediation.note }}</p>
+    {% else %}<p class="error">{{ results.moderated_mediation.error }}</p>{% endif %}</section>{% endif %}
+
+  <footer>软件版本：{% for name, version in results.software_versions.items() %}{{ name }} {{ version }}{% if not loop.last %} · {% endif %}{% endfor %}</footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements-dev.txt
+      - run: PYTHONPATH=. python -m pytest
+
+  package-data:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install --upgrade pip build
+      - run: python -m build --wheel
+      - name: Verify web resources in wheel
+        run: |
+          unzip -l dist/*.whl | grep 'app/static/app.css'
+          unzip -l dist/*.whl | grep 'app/static/app.js'
+          unzip -l dist/*.whl | grep 'app/templates/index.html'
+          unzip -l dist/*.whl | grep 'app/templates/report.html'
+          unzip -l dist/*.whl | grep 'examples/demo_survey.csv'

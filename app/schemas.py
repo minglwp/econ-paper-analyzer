@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ScaleConfig(BaseModel):
@@ -76,6 +76,87 @@ class RoleConfig(BaseModel):
         return self
 
 
+class PathModelConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=64)
+    analysis: Literal[
+        "regression", "mediation", "moderation", "moderated_mediation"
+    ]
+    x: str = Field(min_length=1, max_length=128)
+    y: str = Field(min_length=1, max_length=128)
+    mediator: str | None = None
+    moderator: str | None = None
+    controls: list[str] = Field(default_factory=list, max_length=50)
+    moderated_stage: Literal["first", "second"] = "first"
+
+    @field_validator("name", "x", "y")
+    @classmethod
+    def strip_required_names(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("名称不能为空")
+        return stripped
+
+    @field_validator("mediator", "moderator")
+    @classmethod
+    def valid_optional_role(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped or len(stripped) > 128:
+            raise ValueError("变量名必须为 1 至 128 个字符")
+        return stripped
+
+    @field_validator("controls")
+    @classmethod
+    def valid_control_names(cls, value: list[str]) -> list[str]:
+        stripped = [name.strip() for name in value]
+        if any(not name or len(name) > 128 for name in stripped):
+            raise ValueError("控制变量名必须为 1 至 128 个字符")
+        return stripped
+
+    @model_validator(mode="after")
+    def validate_model_roles(self) -> "PathModelConfig":
+        assigned = [
+            value
+            for value in (self.x, self.y, self.mediator, self.moderator)
+            if value
+        ]
+        if len(set(assigned)) != len(assigned):
+            raise ValueError("X、Y、M、W 必须使用不同变量")
+        if len(set(self.controls)) != len(self.controls):
+            raise ValueError("控制变量不能重复")
+        overlap = set(self.controls) & set(assigned)
+        if overlap:
+            raise ValueError(
+                f"控制变量不能同时作为 X/Y/M/W: {', '.join(sorted(overlap))}"
+            )
+
+        requires_mediator = self.analysis in {"mediation", "moderated_mediation"}
+        requires_moderator = self.analysis in {"moderation", "moderated_mediation"}
+        if requires_mediator and not self.mediator:
+            raise ValueError("该模型需要指定中介变量 M")
+        if not requires_mediator and self.mediator:
+            raise ValueError("该模型类型不使用中介变量 M")
+        if requires_moderator and not self.moderator:
+            raise ValueError("该模型需要指定调节变量 W")
+        if not requires_moderator and self.moderator:
+            raise ValueError("该模型类型不使用调节变量 W")
+        if self.analysis != "moderated_mediation" and self.moderated_stage != "first":
+            raise ValueError("调节阶段仅适用于被调节的中介模型")
+        return self
+
+    def as_roles(self) -> RoleConfig:
+        return RoleConfig(
+            x=self.x,
+            y=self.y,
+            mediator=self.mediator,
+            moderator=self.moderator,
+            controls=self.controls,
+        )
+
+
 class AnalysisOptions(BaseModel):
     cfa: bool = True
     harman: bool = True
@@ -105,7 +186,8 @@ class AnalysisRequest(BaseModel):
         default_factory=lambda: ["", 999], max_length=50
     )
     scales: list[ScaleConfig] = Field(default_factory=list, max_length=50)
-    roles: RoleConfig
+    roles: RoleConfig | None = None
+    models: list[PathModelConfig] = Field(default_factory=list, max_length=20)
     analyses: AnalysisOptions = Field(default_factory=AnalysisOptions)
     inference: InferenceConfig = Field(default_factory=InferenceConfig)
 
@@ -120,27 +202,38 @@ class AnalysisRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_required_roles(self) -> "AnalysisRequest":
-        enabled = (
+        global_enabled = (
             self.analyses.cfa,
             self.analyses.harman,
             self.analyses.ulmc,
             self.analyses.descriptives,
+        )
+        legacy_path_enabled = (
             self.analyses.regression,
             self.analyses.mediation,
             self.analyses.moderation,
             self.analyses.moderated_mediation,
         )
-        if not any(enabled):
+        if not any(global_enabled) and not self.models and not any(legacy_path_enabled):
             raise ValueError("至少需要启用一项分析")
         if self.analyses.cfa or self.analyses.harman or self.analyses.ulmc:
             if not self.scales:
                 raise ValueError("CFA 与共同方法偏差检验至少需要一个量表")
-        if self.analyses.mediation or self.analyses.moderated_mediation:
-            if not self.roles.mediator:
-                raise ValueError("中介分析需要指定 M")
-        if self.analyses.moderation or self.analyses.moderated_mediation:
-            if not self.roles.moderator:
-                raise ValueError("调节分析需要指定 W")
+        if not self.models and any(legacy_path_enabled):
+            if not self.roles:
+                raise ValueError("旧版路径分析需要指定 roles")
+            if self.analyses.mediation or self.analyses.moderated_mediation:
+                if not self.roles.mediator:
+                    raise ValueError("中介分析需要指定 M")
+            if self.analyses.moderation or self.analyses.moderated_mediation:
+                if not self.roles.moderator:
+                    raise ValueError("调节分析需要指定 W")
+        if self.analyses.descriptives and not self.scales and not self.models and not self.roles:
+            raise ValueError("描述性统计至少需要配置量表或分析变量")
+
+        model_names = [model.name for model in self.models]
+        if len(set(model_names)) != len(model_names):
+            raise ValueError("模型名称不能重复")
         names = [scale.name for scale in self.scales]
         if len(set(names)) != len(names):
             raise ValueError("量表名称不能重复")
@@ -155,15 +248,22 @@ class AnalysisRequest(BaseModel):
         overlap = set(names) & set(configured_items)
         if overlap:
             raise ValueError(f"量表名称不能与题项列名相同: {', '.join(sorted(overlap))}")
-        configured_names = [
-            *names,
-            *configured_items,
-            self.roles.x,
-            self.roles.y,
-            self.roles.mediator,
-            self.roles.moderator,
-            *self.roles.controls,
-        ]
+        active_roles = (
+            [model.as_roles() for model in self.models]
+            if self.models
+            else ([self.roles] if self.roles else [])
+        )
+        configured_names: list[str | None] = [*names, *configured_items]
+        for roles in active_roles:
+            configured_names.extend(
+                [
+                    roles.x,
+                    roles.y,
+                    roles.mediator,
+                    roles.moderator,
+                    *roles.controls,
+                ]
+            )
         reserved = sorted(
             {name for name in configured_names if name and name.startswith("__epa_")}
         )

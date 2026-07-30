@@ -36,22 +36,50 @@
       "min_valid_ratio": 0.8
     }
   ],
-  "roles": {
-    "x": "创新氛围",
-    "y": "创新绩效",
-    "mediator": "工作投入",
-    "moderator": "领导支持",
-    "controls": ["年龄", "性别"]
-  },
+  "models": [
+    {
+      "name": "创新氛围对创新绩效的主效应",
+      "analysis": "regression",
+      "x": "创新氛围",
+      "y": "创新绩效",
+      "controls": ["年龄", "性别"]
+    },
+    {
+      "name": "工作投入的中介作用",
+      "analysis": "mediation",
+      "x": "创新氛围",
+      "y": "创新绩效",
+      "mediator": "工作投入",
+      "controls": ["年龄", "性别"]
+    },
+    {
+      "name": "领导支持的调节作用",
+      "analysis": "moderation",
+      "x": "创新氛围",
+      "y": "创新绩效",
+      "moderator": "领导支持",
+      "controls": ["年龄", "性别"]
+    },
+    {
+      "name": "领导支持调节第一阶段中介路径",
+      "analysis": "moderated_mediation",
+      "x": "创新氛围",
+      "y": "创新绩效",
+      "mediator": "工作投入",
+      "moderator": "领导支持",
+      "controls": ["年龄", "性别"],
+      "moderated_stage": "first"
+    }
+  ],
   "analyses": {
     "cfa": true,
     "harman": true,
     "ulmc": true,
     "descriptives": true,
-    "regression": true,
-    "mediation": true,
-    "moderation": true,
-    "moderated_mediation": true,
+    "regression": false,
+    "mediation": false,
+    "moderation": false,
+    "moderated_mediation": false,
     "moderated_stage": "first",
     "correlation": "pearson"
   },

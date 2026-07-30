@@ -124,49 +124,18 @@
           <button class="button button-secondary" type="button" id="addScaleButton"><span aria-hidden="true">＋</span> 添加量表</button>
         </div>
 
-        <div class="workspace-grid scale-workspace">
-          <div class="workspace-main">
-            <div class="subheading-row section-divider-heading">
-              <div>
-                <h3>量表构建</h3>
-                <span id="scaleCount">0 个量表</span>
-              </div>
-            </div>
-            <div class="scale-list" id="scaleList"></div>
-            <div class="empty-state" id="scaleEmpty">
-              <span aria-hidden="true">＋</span>
-              <strong>尚未添加量表</strong>
+        <div class="workspace-main scale-workspace">
+          <div class="subheading-row section-divider-heading">
+            <div>
+              <h3>量表构建</h3>
+              <span id="scaleCount">0 个量表</span>
             </div>
           </div>
-
-          <aside class="workspace-aside variable-panel" aria-labelledby="rolesTitle">
-            <div class="subheading-row section-divider-heading">
-              <h3 id="rolesTitle">变量角色</h3>
-              <span>模型变量</span>
-            </div>
-            <div class="field-stack">
-              <label class="field required-field">
-                <span>自变量 X</span>
-                <select id="roleX" required></select>
-              </label>
-              <label class="field required-field">
-                <span>因变量 Y</span>
-                <select id="roleY" required></select>
-              </label>
-              <label class="field">
-                <span>中介变量 M</span>
-                <select id="roleM"></select>
-              </label>
-              <label class="field">
-                <span>调节变量 W</span>
-                <select id="roleW"></select>
-              </label>
-              <label class="field">
-                <span>控制变量</span>
-                <select id="roleControls" multiple size="6"></select>
-              </label>
-            </div>
-          </aside>
+          <div class="scale-list" id="scaleList"></div>
+          <div class="empty-state" id="scaleEmpty">
+            <span aria-hidden="true">＋</span>
+            <strong>尚未添加量表</strong>
+          </div>
         </div>
 
         <div class="inline-alert is-hidden" id="variableError" role="alert"></div>
@@ -207,37 +176,14 @@
                 <span><strong>描述性统计与相关</strong><small>均值、标准差与相关矩阵</small></span>
                 <input type="checkbox" name="analysis" value="descriptives" checked>
               </label>
-              <label class="toggle-row">
-                <span><strong>回归分析</strong><small>主效应模型</small></span>
-                <input type="checkbox" name="analysis" value="regression" checked>
-              </label>
-              <label class="toggle-row">
-                <span><strong>中介回归与效应检验</strong><small>间接效应</small></span>
-                <input type="checkbox" name="analysis" value="mediation" checked>
-              </label>
-              <label class="toggle-row">
-                <span><strong>调节回归与效应检验</strong><small>交互项与简单斜率图</small></span>
-                <input type="checkbox" name="analysis" value="moderation" checked>
-              </label>
-              <label class="toggle-row">
-                <span><strong>被调节的中介效应</strong><small>条件间接效应</small></span>
-                <input type="checkbox" name="analysis" value="moderated_mediation" checked>
-              </label>
             </div>
           </div>
 
           <div class="settings-column">
             <div class="analysis-block">
               <div class="section-divider-heading">
-                <h3>模型设置</h3>
+                <h3>全局设置</h3>
               </div>
-              <fieldset class="segmented-field" id="stageFieldset">
-                <legend>调节阶段</legend>
-                <div class="segmented-control">
-                  <label><input type="radio" name="moderatedStage" value="first" checked><span>第一阶段</span></label>
-                  <label><input type="radio" name="moderatedStage" value="second"><span>第二阶段</span></label>
-                </div>
-              </fieldset>
               <label class="field">
                 <span>相关系数</span>
                 <select id="correlationMethod">
@@ -286,6 +232,21 @@
             </div>
           </div>
         </div>
+
+        <section class="path-model-section" aria-labelledby="pathModelsTitle">
+          <div class="path-model-toolbar">
+            <div>
+              <h3 id="pathModelsTitle">回归路径模型</h3>
+              <span id="modelCount">0 个模型</span>
+            </div>
+            <button class="button button-secondary" type="button" id="addModelButton"><span aria-hidden="true">＋</span> 添加路径</button>
+          </div>
+          <div class="path-model-list" id="pathModelList"></div>
+          <div class="empty-state compact-empty" id="pathModelEmpty">
+            <span aria-hidden="true">＋</span>
+            <strong>尚未添加回归路径</strong>
+          </div>
+        </section>
 
         <div class="inline-alert is-hidden" id="analysisError" role="alert"></div>
         <div class="step-actions">
@@ -351,30 +312,93 @@
         <button class="icon-button remove-scale" type="button" title="删除量表" aria-label="删除量表">×</button>
       </div>
       <div class="scale-fields">
-        <label class="field scale-name-field">
-          <span>构念名称</span>
-          <input type="text" class="scale-name" maxlength="64" placeholder="例如：工作投入" required>
-        </label>
-        <label class="field item-field">
-          <span>量表题项</span>
-          <select class="scale-items" multiple size="7" required></select>
-        </label>
-        <label class="field item-field">
-          <span>反向题项</span>
-          <select class="scale-reverse-items" multiple size="7"></select>
-        </label>
-        <div class="range-fields">
-          <label class="field">
-            <span>最小值</span>
-            <input type="number" class="scale-min" value="1" step="1" required>
+        <div class="scale-meta-fields">
+          <label class="field scale-name-field">
+            <span>构念名称</span>
+            <input type="text" class="scale-name" maxlength="64" placeholder="例如：工作投入" required>
           </label>
-          <label class="field">
-            <span>最大值</span>
-            <input type="number" class="scale-max" value="5" step="1" required>
+          <div class="range-fields">
+            <label class="field">
+              <span>最小值</span>
+              <input type="number" class="scale-min" value="1" step="1" required>
+            </label>
+            <label class="field">
+              <span>最大值</span>
+              <input type="number" class="scale-max" value="5" step="1" required>
+            </label>
+          </div>
+        </div>
+        <div class="item-picker">
+          <label class="picker-pane field">
+            <span>可用题项 <small class="available-count"></small></span>
+            <select class="scale-available-items" multiple size="8" aria-label="可用题项"></select>
           </label>
+          <div class="picker-actions" aria-label="移动题项">
+            <button class="picker-arrow assign-items" type="button" title="将选中题项加入量表" aria-label="将选中题项加入量表">→</button>
+            <button class="picker-arrow unassign-items" type="button" title="将选中题项移出量表" aria-label="将选中题项移出量表">←</button>
+          </div>
+          <div class="picker-pane field">
+            <span>已选题项 <small class="selected-count"></small></span>
+            <div class="scale-selected-list" role="listbox" aria-label="已选题项，可勾选反向题" aria-multiselectable="true" tabindex="0"></div>
+          </div>
         </div>
       </div>
       <div class="scale-validation" role="status"></div>
+    </article>
+  </template>
+
+  <template id="pathModelTemplate">
+    <article class="path-model-editor">
+      <div class="path-model-head">
+        <div class="model-index">路径 <span></span></div>
+        <div class="model-actions">
+          <button class="icon-button duplicate-model" type="button" title="复制路径" aria-label="复制路径"><span aria-hidden="true">⧉</span></button>
+          <button class="icon-button remove-model" type="button" title="删除路径" aria-label="删除路径">×</button>
+        </div>
+      </div>
+      <div class="path-model-fields">
+        <label class="field model-name-field required-field">
+          <span>模型名称</span>
+          <input type="text" class="model-name" maxlength="64" placeholder="例如：创新氛围 → 创新绩效" required>
+        </label>
+        <label class="field model-analysis-field required-field">
+          <span>模型类型</span>
+          <select class="model-analysis" required>
+            <option value="regression">主效应回归</option>
+            <option value="mediation">中介模型</option>
+            <option value="moderation">调节模型</option>
+            <option value="moderated_mediation">被调节的中介模型</option>
+          </select>
+        </label>
+        <label class="field required-field">
+          <span>自变量 X</span>
+          <select class="model-x" required></select>
+        </label>
+        <label class="field required-field">
+          <span>因变量 Y</span>
+          <select class="model-y" required></select>
+        </label>
+        <label class="field model-mediator-field required-field">
+          <span>中介变量 M</span>
+          <select class="model-mediator"></select>
+        </label>
+        <label class="field model-moderator-field required-field">
+          <span>调节变量 W</span>
+          <select class="model-moderator"></select>
+        </label>
+        <label class="field model-controls-field">
+          <span>控制变量（可多选）</span>
+          <select class="model-controls" multiple size="5"></select>
+        </label>
+        <fieldset class="segmented-field model-stage-field">
+          <legend>调节阶段</legend>
+          <div class="segmented-control">
+            <label><input type="radio" class="model-stage-first" value="first" checked><span>第一阶段</span></label>
+            <label><input type="radio" class="model-stage-second" value="second"><span>第二阶段</span></label>
+          </div>
+        </fieldset>
+      </div>
+      <div class="model-validation" role="status"></div>
     </article>
   </template>
 

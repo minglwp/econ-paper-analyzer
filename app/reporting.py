@@ -16,6 +16,14 @@ from .config import RESOURCE_ROOT
 from .data import write_json
 
 
+PATH_ANALYSIS_LABELS = {
+    "regression": "主效应回归",
+    "mediation": "中介模型",
+    "moderation": "调节模型",
+    "moderated_mediation": "被调节的中介模型",
+}
+
+
 def software_versions() -> dict[str, str]:
     packages = ["numpy", "pandas", "scipy", "statsmodels", "semopy", "matplotlib", "fastapi"]
     versions = {"python": platform.python_version(), "platform": platform.platform()}
@@ -84,6 +92,136 @@ def _model_vif_rows(
             for row in model.get("vif", [])
         )
     return rows
+
+
+def _path_rows(
+    entry: dict[str, Any], rows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    metadata = {
+        "model_id": entry.get("id"),
+        "model_name": entry.get("name"),
+        "model_type": PATH_ANALYSIS_LABELS.get(
+            entry.get("analysis"), entry.get("analysis")
+        ),
+    }
+    output: list[dict[str, Any]] = []
+    for source in rows:
+        row = dict(source)
+        if "model" in row:
+            row["submodel"] = row.pop("model")
+        output.append({**metadata, **row})
+    return output
+
+
+def _path_export_tables(results: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    tables: dict[str, list[dict[str, Any]]] = {
+        "overview": [],
+        "summaries": [],
+        "coefficients": [],
+        "vif": [],
+        "effects": [],
+        "slopes": [],
+        "johnson_neyman": [],
+        "plot_data": [],
+    }
+    for entry in results.get("path_models", []):
+        config = entry.get("config", {})
+        tables["overview"].append(
+            {
+                "model_id": entry.get("id"),
+                "model_name": entry.get("name"),
+                "model_type": PATH_ANALYSIS_LABELS.get(
+                    entry.get("analysis"), entry.get("analysis")
+                ),
+                "status": entry.get("status"),
+                "x": config.get("x"),
+                "y": config.get("y"),
+                "mediator": config.get("mediator"),
+                "moderator": config.get("moderator"),
+                "moderated_stage": config.get("moderated_stage"),
+                "controls": ", ".join(config.get("controls", [])),
+                "error": entry.get("error"),
+            }
+        )
+        if entry.get("status") != "ok":
+            continue
+        result = entry.get("result", {})
+        models = result.get("models", [])
+        tables["summaries"].extend(
+            _path_rows(entry, _model_summary_rows(models))
+        )
+        tables["coefficients"].extend(
+            _path_rows(entry, _model_coefficient_rows(models))
+        )
+        tables["vif"].extend(_path_rows(entry, _model_vif_rows(models)))
+        tables["effects"].extend(
+            _path_rows(entry, result.get("effects", []))
+        )
+        tables["slopes"].extend(
+            _path_rows(entry, result.get("simple_slopes", []))
+        )
+        observed_range = result.get("observed_moderator_range", [None, None])
+        boundaries = [
+            {
+                "boundary": boundary,
+                "observed_min": observed_range[0] if observed_range else None,
+                "observed_max": observed_range[1] if len(observed_range) > 1 else None,
+            }
+            for boundary in result.get("johnson_neyman_boundaries", [])
+        ]
+        tables["johnson_neyman"].extend(_path_rows(entry, boundaries))
+        tables["plot_data"].extend(
+            _path_rows(entry, result.get("plot_data", []))
+        )
+    return tables
+
+
+def _path_report_views(results: dict[str, Any]) -> list[dict[str, Any]]:
+    views: list[dict[str, Any]] = []
+    for entry in results.get("path_models", []):
+        result = entry.get("result", {})
+        models = result.get("models", [])
+        config = entry.get("config", {})
+        png_artifact = next(
+            (
+                artifact.get("name")
+                for artifact in entry.get("artifacts", [])
+                if str(artifact.get("name", "")).lower().endswith(".png")
+            ),
+            None,
+        )
+        views.append(
+            {
+                "id": entry.get("id"),
+                "name": entry.get("name"),
+                "analysis": entry.get("analysis"),
+                "analysis_label": PATH_ANALYSIS_LABELS.get(
+                    entry.get("analysis"), entry.get("analysis")
+                ),
+                "status": entry.get("status"),
+                "error": entry.get("error"),
+                "config": config,
+                "summary": _html_table(_model_summary_rows(models)),
+                "coefficients": _html_table(_model_coefficient_rows(models)),
+                "vif": _html_table(_model_vif_rows(models)),
+                "effects": _html_table(result.get("effects", [])),
+                "slopes": _html_table(result.get("simple_slopes", [])),
+                "johnson_neyman": _html_table(
+                    [
+                        {"boundary": boundary}
+                        for boundary in result.get(
+                            "johnson_neyman_boundaries", []
+                        )
+                    ]
+                ),
+                "moderator_range": result.get("observed_moderator_range"),
+                "interpretation": result.get("interpretation"),
+                "note": result.get("note") or result.get("causal_note"),
+                "template": result.get("template"),
+                "plot": png_artifact,
+            }
+        )
+    return views
 
 
 def _fit_rows(results: dict[str, Any]) -> list[dict[str, Any]]:
@@ -189,6 +327,16 @@ def export_excel(results: dict[str, Any], output_path: Path) -> None:
                 "被调节中介回归",
                 _model_coefficient_rows(results["moderated_mediation"].get("models", {})),
             )
+        if results.get("path_models"):
+            path_tables = _path_export_tables(results)
+            _write_sheet(writer, "路径模型清单", path_tables["overview"])
+            _write_sheet(writer, "路径模型摘要", path_tables["summaries"])
+            _write_sheet(writer, "路径回归系数", path_tables["coefficients"])
+            _write_sheet(writer, "路径回归VIF", path_tables["vif"])
+            _write_sheet(writer, "路径效应检验", path_tables["effects"])
+            _write_sheet(writer, "路径简单斜率", path_tables["slopes"])
+            _write_sheet(writer, "路径Johnson-Neyman", path_tables["johnson_neyman"])
+            _write_sheet(writer, "路径调节绘图数据", path_tables["plot_data"])
 
 
 def _format_value(value: Any) -> str:
@@ -224,6 +372,7 @@ def render_html_report(results: dict[str, Any], output_path: Path) -> None:
     template = environment.get_template("report.html")
     context = {
         "results": results,
+        "path_models": _path_report_views(results),
         "tables": {
             "descriptives": _html_table(results.get("descriptives", {}).get("rows", [])),
             "correlations": _html_table(results.get("correlations", {}).get("rows", [])),
@@ -325,13 +474,28 @@ def save_all_outputs(results: dict[str, Any], run_dir: Path) -> list[dict[str, s
         {"name": "analysis_config.json", "label": "可复现分析配置"},
         {"name": "analysis_bundle.zip", "label": "完整审计包 ZIP"},
     ]
-    if (run_dir / "moderation_plot.png").exists():
-        artifacts.extend(
-            [
-                {"name": "moderation_plot.png", "label": "调节效应图 PNG"},
-                {"name": "moderation_plot.svg", "label": "调节效应图 SVG"},
-            ]
-        )
+    plot_artifacts: list[dict[str, str]] = []
+    if results.get("moderation", {}).get("status") == "ok":
+        plot_artifacts.extend(results["moderation"].get("artifacts", []))
+    for entry in results.get("path_models", []):
+        for artifact in entry.get("artifacts", []):
+            plot_artifacts.append(
+                {
+                    "name": artifact["name"],
+                    "label": f"{entry.get('name', entry.get('id'))} · {artifact.get('label', artifact['name'])}",
+                }
+            )
+    if not plot_artifacts and (run_dir / "moderation_plot.png").exists():
+        plot_artifacts = [
+            {"name": "moderation_plot.png", "label": "调节效应图 PNG"},
+            {"name": "moderation_plot.svg", "label": "调节效应图 SVG"},
+        ]
+    known = {artifact["name"] for artifact in artifacts}
+    for artifact in plot_artifacts:
+        name = Path(artifact["name"]).name
+        if name not in known and (run_dir / name).is_file():
+            artifacts.append({"name": name, "label": artifact["label"]})
+            known.add(name)
     results["artifacts"] = artifacts
     write_json(results_path, results)
     export_excel(results, excel_path)

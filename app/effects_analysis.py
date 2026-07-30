@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from .schemas import AnalysisRequest
+from .schemas import AnalysisRequest, RoleConfig
 from .stats_utils import (
     bootstrap_statistics,
     finite_or_none,
@@ -28,6 +28,18 @@ XW_INTERACTION = "__epa_xw_interaction"
 MW_INTERACTION = "__epa_mw_interaction"
 
 
+def _configured_roles(request: AnalysisRequest) -> list[RoleConfig]:
+    if request.models:
+        return [model.as_roles() for model in request.models]
+    return [request.roles] if request.roles else []
+
+
+def _require_roles(request: AnalysisRequest) -> RoleConfig:
+    if request.roles is None:
+        raise ValueError("该分析未配置 X 和 Y")
+    return request.roles
+
+
 def prepare_analysis_data(
     original: pd.DataFrame, request: AnalysisRequest
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
@@ -40,8 +52,11 @@ def prepare_analysis_data(
     item_names = list(dict.fromkeys(configured_items))
     source_columns = set(frame.columns)
     required_source = set(item_names)
-    role_values = [request.roles.x, request.roles.y, request.roles.mediator, request.roles.moderator]
-    role_values.extend(request.roles.controls)
+    role_values: list[str | None] = []
+    for roles in _configured_roles(request):
+        role_values.extend(
+            [roles.x, roles.y, roles.mediator, roles.moderator, *roles.controls]
+        )
     scale_names = {scale.name for scale in request.scales}
     required_source.update(value for value in role_values if value and value not in scale_names)
     missing = sorted(required_source - source_columns)
@@ -133,15 +148,16 @@ def prepare_analysis_data(
 
 def analysis_variable_names(frame: pd.DataFrame, request: AnalysisRequest) -> list[str]:
     candidates = [scale.name for scale in request.scales]
-    candidates.extend(
-        [
-            request.roles.x,
-            request.roles.y,
-            request.roles.mediator,
-            request.roles.moderator,
-            *request.roles.controls,
-        ]
-    )
+    for roles in _configured_roles(request):
+        candidates.extend(
+            [
+                roles.x,
+                roles.y,
+                roles.mediator,
+                roles.moderator,
+                *roles.controls,
+            ]
+        )
     return [name for name in dict.fromkeys(candidates) if name and name in frame.columns]
 
 
@@ -240,7 +256,7 @@ def _validate_regression_variable_types(
 
 
 def run_regressions(frame: pd.DataFrame, request: AnalysisRequest) -> dict[str, Any]:
-    roles = request.roles
+    roles = _require_roles(request)
     variables = [roles.y, roles.x, *roles.controls]
     if roles.mediator:
         variables.append(roles.mediator)
@@ -283,7 +299,7 @@ def run_regressions(frame: pd.DataFrame, request: AnalysisRequest) -> dict[str, 
 
 
 def run_mediation(frame: pd.DataFrame, request: AnalysisRequest) -> dict[str, Any]:
-    roles = request.roles
+    roles = _require_roles(request)
     if not roles.mediator:
         raise ValueError("未指定中介变量 M")
     columns = [roles.x, roles.mediator, roles.y, *roles.controls]
@@ -368,6 +384,7 @@ def _moderation_plot(
     w_sd: float,
     alpha: float,
     output_dir: Path,
+    artifact_prefix: str | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     predictor_names = list(fit._epa_parameter_names)[1:]
     parameter_names = list(fit._epa_parameter_names)
@@ -424,8 +441,13 @@ def _moderation_plot(
     axis.spines[["top", "right"]].set_visible(False)
     axis.legend(frameon=False)
     figure.tight_layout()
-    png = output_dir / "moderation_plot.png"
-    svg = output_dir / "moderation_plot.svg"
+    safe_prefix = "".join(
+        character if character.isalnum() or character in {"-", "_"} else "-"
+        for character in (artifact_prefix or "")
+    ).strip("-_")
+    stem = f"{safe_prefix}_moderation_plot" if safe_prefix else "moderation_plot"
+    png = output_dir / f"{stem}.png"
+    svg = output_dir / f"{stem}.svg"
     figure.savefig(png, dpi=180, bbox_inches="tight")
     figure.savefig(svg, bbox_inches="tight")
     plt.close(figure)
@@ -436,9 +458,12 @@ def _moderation_plot(
 
 
 def run_moderation(
-    frame: pd.DataFrame, request: AnalysisRequest, output_dir: Path
+    frame: pd.DataFrame,
+    request: AnalysisRequest,
+    output_dir: Path,
+    artifact_prefix: str | None = None,
 ) -> dict[str, Any]:
-    roles = request.roles
+    roles = _require_roles(request)
     if not roles.moderator:
         raise ValueError("未指定调节变量 W")
     columns = [roles.x, roles.y, roles.moderator, *roles.controls]
@@ -553,6 +578,7 @@ def run_moderation(
         w_sd,
         request.inference.alpha,
         output_dir,
+        artifact_prefix,
     )
     interaction_row = next(
         row
@@ -586,7 +612,7 @@ def run_moderation(
 
 
 def run_moderated_mediation(frame: pd.DataFrame, request: AnalysisRequest) -> dict[str, Any]:
-    roles = request.roles
+    roles = _require_roles(request)
     if not roles.mediator or not roles.moderator:
         raise ValueError("被调节的中介需要同时指定 M 和 W")
     columns = [roles.x, roles.mediator, roles.moderator, roles.y, *roles.controls]

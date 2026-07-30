@@ -20,11 +20,22 @@ from .effects_analysis import (
     run_regressions,
 )
 from .reporting import save_all_outputs, software_versions
-from .schemas import AnalysisRequest
+from .schemas import AnalysisRequest, PathModelConfig
 from .sem_analysis import run_cfa, run_harman, run_ulmc
 
 
 ProgressCallback = Callable[[int, str], None]
+
+
+def _request_for_path_model(
+    request: AnalysisRequest, model: PathModelConfig
+) -> AnalysisRequest:
+    analyses = request.analyses.model_copy(
+        update={"moderated_stage": model.moderated_stage}
+    )
+    return request.model_copy(
+        update={"roles": model.as_roles(), "models": [], "analyses": analyses}
+    )
 
 
 def summarize_results(results: dict[str, Any]) -> dict[str, Any]:
@@ -78,6 +89,24 @@ def summarize_results(results: dict[str, Any]) -> dict[str, Any]:
             for row in results["moderated_mediation"]["effects"]
             if row["effect"] == "index_moderated_mediation"
         )
+    if "path_models" in results:
+        path_models = results["path_models"]
+        summary["path_models"] = [
+            {
+                "id": model["id"],
+                "name": model["name"],
+                "analysis": model["analysis"],
+                "status": model["status"],
+                **({"error": model["error"]} if model.get("error") else {}),
+            }
+            for model in path_models
+        ]
+        summary["completed_models"] = [
+            model["id"] for model in path_models if model["status"] == "ok"
+        ]
+        summary["failed_models"] = [
+            model["id"] for model in path_models if model["status"] == "error"
+        ]
     return summary
 
 
@@ -98,7 +127,7 @@ def run_full_analysis(
     original = load_dataframe(input_path, request.sheet_name)
     frame, item_data, quality = prepare_analysis_data(original, request)
     results: dict[str, Any] = {
-        "schema_version": "1.0",
+        "schema_version": "2.0" if request.models else "1.0",
         "run_id": run_id,
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "data_file": input_path.name,
@@ -123,44 +152,117 @@ def run_full_analysis(
     progress(10, "计算量表得分与数据质量")
     variables = analysis_variable_names(frame, request)
 
+    global_step_count = sum(
+        (
+            options.cfa,
+            options.harman,
+            options.ulmc,
+            options.descriptives,
+            options.descriptives,
+        )
+    )
+    legacy_step_count = 0
+    if not request.models:
+        legacy_step_count = sum(
+            (
+                options.regression,
+                options.mediation,
+                options.moderation,
+                options.moderated_mediation,
+            )
+        )
+    total_steps = global_step_count + legacy_step_count + len(request.models)
+    step_index = 0
+
+    def report_step(message: str) -> None:
+        nonlocal step_index
+        step_index += 1
+        value = 10 + round(80 * step_index / (total_steps + 1))
+        progress(value, message)
+
     if options.cfa:
-        progress(18, "运行验证性因子分析")
+        report_step("运行验证性因子分析")
         execute("cfa", "CFA", lambda: run_cfa(item_data, request.scales))
     if options.harman:
-        progress(29, "运行 Harman 降维检验")
+        report_step("运行 Harman 降维检验")
         execute(
             "harman",
             "Harman 检验",
             lambda: run_harman(item_data, request.inference.harman_threshold),
         )
     if options.ulmc:
-        progress(39, "估计 ULMC 方法因子模型")
+        report_step("估计 ULMC 方法因子模型")
         execute("ulmc", "ULMC", lambda: run_ulmc(item_data, request.scales))
     if options.descriptives:
-        progress(48, "计算描述性统计")
+        report_step("计算描述性统计")
         execute("descriptives", "描述性统计", lambda: {"rows": run_descriptives(frame, variables)})
-        progress(54, "计算相关矩阵")
+        report_step("计算相关矩阵")
         execute(
             "correlations",
             "相关分析",
             lambda: run_correlations(frame, variables, options.correlation, request.inference.alpha),
         )
-    if options.regression:
-        progress(61, "估计回归模型")
-        execute("regression", "回归分析", lambda: run_regressions(frame, request))
-    if options.mediation:
-        progress(69, "Bootstrap 中介效应")
-        execute("mediation", "中介效应", lambda: run_mediation(frame, request))
-    if options.moderation:
-        progress(78, "计算调节效应与简单斜率")
-        execute("moderation", "调节效应", lambda: run_moderation(frame, request, run_dir))
-    if options.moderated_mediation:
-        progress(87, "Bootstrap 被调节的中介效应")
-        execute(
-            "moderated_mediation",
-            "被调节的中介",
-            lambda: run_moderated_mediation(frame, request),
-        )
+    if request.models:
+        results["path_models"] = []
+        path_runners: dict[
+            str, Callable[[AnalysisRequest, str], dict[str, Any]]
+        ] = {
+            "regression": lambda model_request, _model_id: run_regressions(
+                frame, model_request
+            ),
+            "mediation": lambda model_request, _model_id: run_mediation(
+                frame, model_request
+            ),
+            "moderation": lambda model_request, model_id: run_moderation(
+                frame, model_request, run_dir, artifact_prefix=model_id
+            ),
+            "moderated_mediation": lambda model_request, _model_id: (
+                run_moderated_mediation(frame, model_request)
+            ),
+        }
+        for index, model in enumerate(request.models, start=1):
+            model_id = f"model-{index:02d}"
+            label = f"模型 {index}/{len(request.models)}：{model.name}"
+            report_step(f"运行{label}")
+            entry: dict[str, Any] = {
+                "id": model_id,
+                "name": model.name,
+                "analysis": model.analysis,
+                "status": "ok",
+                "result": {},
+                "artifacts": [],
+                "config": model.model_dump(mode="json"),
+            }
+            try:
+                model_request = _request_for_path_model(request, model)
+                model_result = path_runners[model.analysis](model_request, model_id)
+                entry["artifacts"] = model_result.pop("artifacts", [])
+                entry["result"] = model_result
+                log_lines.append(f"OK {label}")
+            except Exception as exc:  # Keep the other configured paths auditable.
+                message = f"{label}: {exc}"
+                entry["status"] = "error"
+                entry["error"] = str(exc)
+                results["errors"].append(message)
+                log_lines.append(f"ERROR {message}\n{traceback.format_exc()}")
+            results["path_models"].append(entry)
+    else:
+        if options.regression:
+            report_step("估计回归模型")
+            execute("regression", "回归分析", lambda: run_regressions(frame, request))
+        if options.mediation:
+            report_step("Bootstrap 中介效应")
+            execute("mediation", "中介效应", lambda: run_mediation(frame, request))
+        if options.moderation:
+            report_step("计算调节效应与简单斜率")
+            execute("moderation", "调节效应", lambda: run_moderation(frame, request, run_dir))
+        if options.moderated_mediation:
+            report_step("Bootstrap 被调节的中介效应")
+            execute(
+                "moderated_mediation",
+                "被调节的中介",
+                lambda: run_moderated_mediation(frame, request),
+            )
 
     log_path.write_text("\n\n".join(log_lines), encoding="utf-8")
     progress(94, "生成报告、表格和审计包")

@@ -70,6 +70,20 @@
   {% if results.descriptives %}<section><h2>描述性统计</h2>{{ tables.descriptives|safe }}</section>{% endif %}
   {% if results.correlations %}<section><h2>相关分析</h2><p class="meta">方法：{{ results.correlations.method }}</p>{{ tables.correlations|safe }}</section>{% endif %}
 
+  {% for model in path_models %}<section><h2>路径 {{ loop.index }}：{{ model.name }}</h2>
+    <p class="meta">{{ model.analysis_label }} · X = {{ model.config.x }} · Y = {{ model.config.y }}{% if model.config.mediator %} · M = {{ model.config.mediator }}{% endif %}{% if model.config.moderator %} · W = {{ model.config.moderator }}{% endif %}{% if model.config.controls %} · 控制变量 = {{ model.config.controls|join('、') }}{% else %} · 无控制变量{% endif %}</p>
+    {% if model.status == 'ok' %}
+      {% if model.template %}<p class="meta">{{ model.template }}</p>{% endif %}
+      <h3>模型摘要与诊断</h3>{{ model.summary|safe }}
+      <h3>路径回归系数</h3>{{ model.coefficients|safe }}
+      {% if model.analysis == 'regression' or model.analysis == 'moderation' %}<h3>多重共线性</h3>{{ model.vif|safe }}{% endif %}
+      {% if model.analysis == 'mediation' or model.analysis == 'moderated_mediation' %}<h3>效应分解与 Bootstrap 区间</h3>{{ model.effects|safe }}{% endif %}
+      {% if model.analysis == 'moderation' %}<h3>简单斜率</h3>{{ model.slopes|safe }}<h3>Johnson-Neyman 边界</h3>{% if model.moderator_range %}<p class="meta">W 的观测范围：{{ model.moderator_range[0]|fmt }} 至 {{ model.moderator_range[1]|fmt }}</p>{% endif %}{{ model.johnson_neyman|safe }}{% if model.plot %}<img class="plot" src="{{ model.plot }}" alt="{{ model.name }}调节效应图">{% endif %}{% endif %}
+      {% if model.interpretation %}<p>{{ model.interpretation }}</p>{% endif %}
+      {% if model.note %}<p class="note">{{ model.note }}</p>{% endif %}
+    {% else %}<p class="error">{{ model.error }}</p>{% endif %}
+  </section>{% endfor %}
+
   {% if results.regression %}<section><h2>回归分析</h2>
     {% if results.regression.status == 'ok' %}<h3>模型摘要与诊断</h3>{{ tables.regression_fit|safe }}<h3>回归系数</h3>{{ tables.regression|safe }}<h3>多重共线性</h3>{{ tables.regression_vif|safe }}{% else %}<p class="error">{{ results.regression.error }}</p>{% endif %}</section>{% endif %}
 

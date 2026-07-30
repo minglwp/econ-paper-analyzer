@@ -13,6 +13,7 @@ const state = {
   file: null,
   dataset: null,
   scaleSequence: 0,
+  modelSequence: 0,
   currentStep: "upload",
   jobId: null,
   runId: null,
@@ -24,6 +25,7 @@ const state = {
 const stepOrder = ["upload", "variables", "analysis", "results"];
 const terminalStatuses = new Set(["completed", "completed_with_errors", "complete", "succeeded", "success", "done", "failed", "error", "cancelled"]);
 const savedJobKey = "econ-paper-analyzer:last-job";
+const maxPathModels = 20;
 
 const els = {};
 
@@ -39,13 +41,13 @@ function cacheElements() {
     "datasetContext", "resetButton", "fileInput", "chooseFileButton", "uploadButton", "demoButton", "uploadZone",
     "fileLabel", "fileMeta", "uploadState", "uploadError", "dataReview", "dataCaption", "sheetField",
     "sheetSelect", "qualityStats", "columnCount", "columnQuality", "warningCount", "dataWarnings",
-    "previewTable", "addScaleButton", "scaleList", "scaleEmpty", "scaleCount", "roleX", "roleY",
-    "roleM", "roleW", "roleControls", "variableError", "variablesNext", "analysisToggles",
-    "analysisCount", "stageFieldset", "correlationMethod", "harmanThreshold", "alphaInput",
+    "previewTable", "addScaleButton", "scaleList", "scaleEmpty", "scaleCount", "variableError", "variablesNext",
+    "analysisToggles", "analysisCount", "addModelButton", "pathModelList", "pathModelEmpty", "modelCount",
+    "correlationMethod", "harmanThreshold", "alphaInput",
     "bootstrapInput", "seedInput", "ciMethod", "robustSe", "analysisError", "runAnalysisButton",
     "jobBadge", "jobProgress", "progressTitle", "progressMessage", "progressPercent", "progressBar",
     "runLog", "jobError", "resultWorkspace", "resultSummary", "resultDiagnostics", "artifactList",
-    "artifactCount", "backToSettings", "rerunButton", "scaleTemplate", "toastRegion",
+    "artifactCount", "backToSettings", "rerunButton", "scaleTemplate", "pathModelTemplate", "toastRegion",
   ].forEach((id) => { els[id] = document.getElementById(id); });
 }
 
@@ -56,6 +58,7 @@ function bindEvents() {
   els.demoButton.addEventListener("click", handleDemo);
   els.resetButton.addEventListener("click", resetApplication);
   els.addScaleButton.addEventListener("click", () => addScale());
+  els.addModelButton.addEventListener("click", () => addPathModel());
   els.variablesNext.addEventListener("click", handleVariablesNext);
   els.runAnalysisButton.addEventListener("click", handleRunAnalysis);
   els.rerunButton.addEventListener("click", handleRunAnalysis);
@@ -220,7 +223,10 @@ function normalizeJobResponse(raw, fallbackId) {
   const status = String(job.status || job.state || (result ? "completed" : "queued")).toLowerCase();
   const artifacts = job.artifacts || result?.artifacts || job.downloads || [];
   const diagnostics = job.diagnostics || result?.diagnostics || result?.model_diagnostics || [];
-  const summary = result?.summary || job.summary || result || {};
+  let summary = result?.summary || job.summary || result || {};
+  if (Array.isArray(result?.path_models) && isPlainObject(summary)) {
+    summary = { ...summary, path_models: result.path_models };
+  }
   return {
     id: String(job.job_id || job.id || fallbackId || ""),
     runId: String(job.run_id || job.runId || ""),
@@ -306,13 +312,8 @@ async function handleDemo() {
     renderDataset(state.dataset);
     unlockStep("variables");
     (raw.suggested_config?.scales || []).forEach((scale) => addScale(scale));
-    updateRoleOptions();
-    const roles = raw.suggested_config?.roles || {};
-    els.roleX.value = roles.x || "";
-    els.roleY.value = roles.y || "";
-    els.roleM.value = roles.mediator || "";
-    els.roleW.value = roles.moderator || "";
-    [...els.roleControls.options].forEach((option) => { option.selected = (roles.controls || []).includes(option.value); });
+    updateModelOptions();
+    suggestedPathModels(raw.suggested_config || {}).forEach((model) => addPathModel(model, { focus: false }));
     els.datasetContext.textContent = `示例数据 · ${formatInteger(state.dataset.rows)} 行 × ${formatInteger(state.dataset.columnTotal)} 列`;
     els.uploadState.textContent = "示例已就绪";
     showToast("示例数据与模型配置已载入");
@@ -480,18 +481,16 @@ function addScale(initial = {}) {
   editor.querySelector(".scale-name").value = initial.name || "";
   editor.querySelector(".scale-min").value = initial.minimum ?? 1;
   editor.querySelector(".scale-max").value = initial.maximum ?? 5;
-  const itemSelect = editor.querySelector(".scale-items");
-  const reverseSelect = editor.querySelector(".scale-reverse-items");
-  state.dataset.columns.filter((column) => column.numeric).forEach((column) => {
-    itemSelect.add(new Option(column.name, column.name, false, (initial.items || []).includes(column.name)));
-  });
-  syncReverseOptions(editor, initial.reverse_items || []);
-  itemSelect.addEventListener("change", () => {
-    syncReverseOptions(editor);
-    validateScaleEditor(editor, false);
-  });
+  const alreadyAssigned = new Set(assignedScaleItems());
+  (initial.items || [])
+    .filter((item) => !alreadyAssigned.has(item) && questionColumnNames().includes(item))
+    .forEach((item) => appendSelectedScaleItem(editor, item, (initial.reverse_items || []).includes(item)));
+  editor.querySelector(".assign-items").addEventListener("click", () => assignScaleItems(editor));
+  editor.querySelector(".unassign-items").addEventListener("click", () => unassignScaleItems(editor));
+  editor.querySelector(".scale-available-items").addEventListener("dblclick", () => assignScaleItems(editor));
+  editor.querySelector(".scale-selected-list").addEventListener("keydown", (event) => handleSelectedItemKeydown(event, editor));
   editor.querySelector(".scale-name").addEventListener("input", () => {
-    updateRoleOptions();
+    updateModelOptions();
     validateScaleEditor(editor, false);
   });
   editor.querySelector(".scale-min").addEventListener("input", () => validateScaleEditor(editor, false));
@@ -499,21 +498,131 @@ function addScale(initial = {}) {
   editor.querySelector(".remove-scale").addEventListener("click", () => {
     editor.remove();
     refreshScaleIndices();
-    updateRoleOptions();
+    refreshScaleItemPickers();
+    updateModelOptions();
   });
   els.scaleList.append(editor);
   refreshScaleIndices();
-  updateRoleOptions();
+  refreshScaleItemPickers();
+  updateModelOptions();
   editor.querySelector(".scale-name").focus();
 }
 
-function syncReverseOptions(editor, selectedValues = null) {
-  const itemSelect = editor.querySelector(".scale-items");
-  const reverseSelect = editor.querySelector(".scale-reverse-items");
-  const previous = selectedValues || selectedOptions(reverseSelect);
-  reverseSelect.replaceChildren();
-  selectedOptions(itemSelect).forEach((item) => {
-    reverseSelect.add(new Option(item, item, false, previous.includes(item)));
+function questionColumnNames() {
+  return (state.dataset?.columns || []).filter((column) => column.numeric).map((column) => column.name);
+}
+
+function assignedScaleItems() {
+  return [...els.scaleList.querySelectorAll(".picker-selected-item")].map((row) => row.dataset.item);
+}
+
+function scaleItems(editor) {
+  return [...editor.querySelectorAll(".picker-selected-item")].map((row) => row.dataset.item);
+}
+
+function reverseScaleItems(editor) {
+  return [...editor.querySelectorAll(".picker-selected-item")]
+    .filter((row) => row.querySelector(".reverse-checkbox").checked)
+    .map((row) => row.dataset.item);
+}
+
+function appendSelectedScaleItem(editor, item, reverse = false) {
+  if (!item || scaleItems(editor).includes(item)) return;
+  const list = editor.querySelector(".scale-selected-list");
+  list.querySelector(".picker-empty")?.remove();
+  const row = document.createElement("div");
+  row.className = "picker-selected-item";
+  row.dataset.item = item;
+  row.setAttribute("role", "option");
+  row.setAttribute("aria-selected", "false");
+  row.tabIndex = 0;
+
+  const name = document.createElement("span");
+  name.className = "picker-item-name";
+  name.textContent = item;
+  name.title = item;
+  const reverseLabel = document.createElement("label");
+  reverseLabel.className = "reverse-choice";
+  reverseLabel.title = `将 ${item} 标记为反向题`;
+  const reverseInput = document.createElement("input");
+  reverseInput.type = "checkbox";
+  reverseInput.className = "reverse-checkbox";
+  reverseInput.checked = reverse;
+  reverseInput.setAttribute("aria-label", `${item} 是反向题`);
+  const reverseText = document.createElement("span");
+  reverseText.textContent = "反向";
+  reverseLabel.append(reverseInput, reverseText);
+  row.append(name, reverseLabel);
+  row.addEventListener("click", (event) => {
+    if (event.target.closest(".reverse-choice")) return;
+    toggleSelectedScaleRow(row);
+  });
+  row.addEventListener("dblclick", (event) => {
+    if (event.target.closest(".reverse-choice")) return;
+    row.remove();
+    refreshScaleItemPickers();
+    validateScaleEditor(editor, false);
+  });
+  list.append(row);
+}
+
+function toggleSelectedScaleRow(row) {
+  const selected = row.getAttribute("aria-selected") !== "true";
+  row.setAttribute("aria-selected", String(selected));
+  row.classList.toggle("is-selected", selected);
+}
+
+function assignScaleItems(editor) {
+  const available = editor.querySelector(".scale-available-items");
+  const items = selectedOptions(available);
+  if (!items.length) return;
+  items.forEach((item) => appendSelectedScaleItem(editor, item));
+  refreshScaleItemPickers();
+  validateScaleEditor(editor, false);
+}
+
+function unassignScaleItems(editor) {
+  const rows = [...editor.querySelectorAll('.picker-selected-item[aria-selected="true"]')];
+  if (!rows.length) return;
+  rows.forEach((row) => row.remove());
+  refreshScaleItemPickers();
+  validateScaleEditor(editor, false);
+}
+
+function handleSelectedItemKeydown(event, editor) {
+  const row = event.target.closest(".picker-selected-item");
+  if (!row) return;
+  if (event.key === " " || event.key === "Enter") {
+    event.preventDefault();
+    toggleSelectedScaleRow(row);
+  }
+  if (event.key === "Delete" || event.key === "Backspace") {
+    event.preventDefault();
+    row.remove();
+    refreshScaleItemPickers();
+    validateScaleEditor(editor, false);
+  }
+}
+
+function refreshScaleItemPickers() {
+  const assigned = new Set(assignedScaleItems());
+  [...els.scaleList.querySelectorAll(".scale-editor")].forEach((editor) => {
+    const available = editor.querySelector(".scale-available-items");
+    const previousSelection = selectedOptions(available);
+    const availableItems = questionColumnNames().filter((item) => !assigned.has(item));
+    available.replaceChildren(...availableItems.map((item) => new Option(item, item, false, previousSelection.includes(item))));
+    editor.querySelector(".available-count").textContent = `${availableItems.length} 项`;
+    const selectedItems = scaleItems(editor);
+    editor.querySelector(".selected-count").textContent = `${selectedItems.length} 项`;
+    const selectedList = editor.querySelector(".scale-selected-list");
+    if (!selectedItems.length && !selectedList.querySelector(".picker-empty")) {
+      const empty = document.createElement("div");
+      empty.className = "picker-empty";
+      empty.textContent = "尚未选择题项";
+      selectedList.append(empty);
+    }
+    editor.querySelector(".assign-items").disabled = availableItems.length === 0;
+    editor.querySelector(".unassign-items").disabled = selectedItems.length === 0;
   });
 }
 
@@ -528,34 +637,49 @@ function refreshScaleIndices() {
 }
 
 function populateVariableControls() {
-  [els.roleX, els.roleY, els.roleM, els.roleW, els.roleControls].forEach((select) => select.replaceChildren());
-  updateRoleOptions();
+  refreshScaleItemPickers();
+  updateModelOptions();
 }
 
-function updateRoleOptions() {
-  if (!state.dataset) return;
-  const previousValues = {
-    roleX: els.roleX.value,
-    roleY: els.roleY.value,
-    roleM: els.roleM.value,
-    roleW: els.roleW.value,
-    roleControls: selectedOptions(els.roleControls),
-  };
+function modelVariableChoices() {
   const scaleNames = [...els.scaleList.querySelectorAll(".scale-name")]
     .map((input) => input.value.trim())
     .filter(Boolean);
-  const baseNames = state.dataset.columns.filter((column) => column.numeric).map((column) => column.name);
+  const baseNames = questionColumnNames();
+  return { scaleNames: [...new Set(scaleNames)], baseNames };
+}
+
+function updateModelOptions() {
+  if (!state.dataset) return;
+  [...els.pathModelList.querySelectorAll(".path-model-editor")].forEach((editor) => populateModelEditorOptions(editor));
+}
+
+function populateModelEditorOptions(editor, initial = null) {
+  const { scaleNames, baseNames } = modelVariableChoices();
   const choices = [...new Set([...scaleNames, ...baseNames])];
-  [els.roleX, els.roleY, els.roleM, els.roleW].forEach((select) => {
-    const previous = previousValues[select.id];
+  const values = initial || {
+    x: editor.querySelector(".model-x").value,
+    y: editor.querySelector(".model-y").value,
+    mediator: editor.querySelector(".model-mediator").value,
+    moderator: editor.querySelector(".model-moderator").value,
+    controls: selectedOptions(editor.querySelector(".model-controls")),
+  };
+  const mappings = [
+    [editor.querySelector(".model-x"), values.x],
+    [editor.querySelector(".model-y"), values.y],
+    [editor.querySelector(".model-mediator"), values.mediator],
+    [editor.querySelector(".model-moderator"), values.moderator],
+  ];
+  mappings.forEach(([select, previous]) => {
     select.replaceChildren(new Option("请选择", ""));
     appendGroupedOptions(select, scaleNames, baseNames);
     if (choices.includes(previous)) select.value = previous;
   });
-  els.roleControls.replaceChildren();
-  appendGroupedOptions(els.roleControls, scaleNames, baseNames);
-  [...els.roleControls.options].forEach((option) => {
-    option.selected = previousValues.roleControls.includes(option.value);
+  const controls = editor.querySelector(".model-controls");
+  controls.replaceChildren();
+  appendGroupedOptions(controls, scaleNames, baseNames);
+  [...controls.options].forEach((option) => {
+    option.selected = (values.controls || []).includes(option.value);
   });
 }
 
@@ -574,7 +698,7 @@ function appendGroupedOptions(select, scaleNames, baseNames) {
 
 function validateScaleEditor(editor, announce = true) {
   const name = editor.querySelector(".scale-name").value.trim();
-  const items = selectedOptions(editor.querySelector(".scale-items"));
+  const items = scaleItems(editor);
   const minimum = Number(editor.querySelector(".scale-min").value);
   const maximum = Number(editor.querySelector(".scale-max").value);
   let message = "";
@@ -598,10 +722,7 @@ function handleVariablesNext() {
     showAlert(els.variableError, "量表名称不能重复。");
     return;
   }
-  if (!els.roleX.value || !els.roleY.value) {
-    showAlert(els.variableError, "请指定自变量 X 和因变量 Y。");
-    return;
-  }
+  updateModelOptions();
   unlockStep("analysis");
   showStep("analysis");
 }
@@ -609,30 +730,155 @@ function handleVariablesNext() {
 function collectScales() {
   return [...els.scaleList.querySelectorAll(".scale-editor")].map((editor) => ({
     name: editor.querySelector(".scale-name").value.trim(),
-    items: selectedOptions(editor.querySelector(".scale-items")),
-    reverse_items: selectedOptions(editor.querySelector(".scale-reverse-items")),
+    items: scaleItems(editor),
+    reverse_items: reverseScaleItems(editor),
     minimum: Number(editor.querySelector(".scale-min").value),
     maximum: Number(editor.querySelector(".scale-max").value),
   }));
 }
 
+function suggestedPathModels(config) {
+  if (Array.isArray(config.models) && config.models.length) return config.models;
+  const roles = config.roles || {};
+  if (!roles.x || !roles.y) return [];
+  return [{
+    name: "被调节的中介模型（Model 7）",
+    analysis: roles.mediator && roles.moderator ? "moderated_mediation" : roles.mediator ? "mediation" : roles.moderator ? "moderation" : "regression",
+    x: roles.x,
+    y: roles.y,
+    mediator: roles.mediator || null,
+    moderator: roles.moderator || null,
+    controls: roles.controls || [],
+    moderated_stage: "first",
+  }];
+}
+
+function addPathModel(initial = {}, options = {}) {
+  if (!state.dataset) return;
+  const existingCount = els.pathModelList.querySelectorAll(".path-model-editor").length;
+  if (existingCount >= maxPathModels) {
+    showToast(`最多可添加 ${maxPathModels} 条路径。`, true);
+    return;
+  }
+  state.modelSequence += 1;
+  const editor = els.pathModelTemplate.content.firstElementChild.cloneNode(true);
+  editor.dataset.modelId = String(state.modelSequence);
+  editor.querySelector(".model-name").value = initial.name || `路径模型 ${state.modelSequence}`;
+  editor.querySelector(".model-analysis").value = initial.analysis || initial.type || "regression";
+  const stageName = `model-stage-${state.modelSequence}`;
+  editor.querySelectorAll(".model-stage-field input").forEach((input) => { input.name = stageName; });
+  const stage = initial.moderated_stage || initial.moderatedStage || "first";
+  editor.querySelector(`.model-stage-${stage === "second" ? "second" : "first"}`).checked = true;
+  populateModelEditorOptions(editor, {
+    x: initial.x || "",
+    y: initial.y || "",
+    mediator: initial.mediator || initial.m || "",
+    moderator: initial.moderator || initial.w || "",
+    controls: initial.controls || [],
+  });
+  editor.querySelector(".model-analysis").addEventListener("change", () => {
+    updateModelVisibility(editor);
+    validatePathModelEditor(editor, false);
+    updateAnalysisCount();
+  });
+  editor.querySelectorAll("input, select").forEach((input) => {
+    input.addEventListener("change", () => validatePathModelEditor(editor, false));
+  });
+  editor.querySelector(".model-name").addEventListener("input", () => validatePathModelEditor(editor, false));
+  editor.querySelector(".remove-model").addEventListener("click", () => {
+    editor.remove();
+    refreshPathModelIndices();
+  });
+  editor.querySelector(".duplicate-model").addEventListener("click", () => {
+    const copy = collectPathModel(editor);
+    copy.name = duplicatePathModelName(copy.name);
+    addPathModel(copy);
+  });
+  els.pathModelList.append(editor);
+  updateModelVisibility(editor);
+  refreshPathModelIndices();
+  if (options.focus !== false) editor.querySelector(".model-name").focus();
+}
+
+function duplicatePathModelName(name) {
+  const existing = new Set(collectPathModels().map((model) => model.name));
+  for (let number = 1; number <= maxPathModels; number += 1) {
+    const suffix = number === 1 ? "（副本）" : `（副本 ${number}）`;
+    const candidate = `${name.slice(0, 64 - suffix.length)}${suffix}`;
+    if (!existing.has(candidate)) return candidate;
+  }
+  return `路径模型 ${state.modelSequence + 1}`;
+}
+
+function updateModelVisibility(editor) {
+  const analysis = editor.querySelector(".model-analysis").value;
+  const needsMediator = analysis === "mediation" || analysis === "moderated_mediation";
+  const needsModerator = analysis === "moderation" || analysis === "moderated_mediation";
+  editor.querySelector(".model-mediator-field").classList.toggle("is-hidden", !needsMediator);
+  editor.querySelector(".model-moderator-field").classList.toggle("is-hidden", !needsModerator);
+  editor.querySelector(".model-stage-field").classList.toggle("is-hidden", analysis !== "moderated_mediation");
+}
+
+function refreshPathModelIndices() {
+  const editors = [...els.pathModelList.querySelectorAll(".path-model-editor")];
+  editors.forEach((editor, index) => {
+    editor.querySelector(".model-index span").textContent = index + 1;
+    editor.querySelector(".duplicate-model").setAttribute("aria-label", `复制路径 ${index + 1}`);
+    editor.querySelector(".remove-model").setAttribute("aria-label", `删除路径 ${index + 1}`);
+  });
+  els.pathModelEmpty.classList.toggle("is-hidden", editors.length > 0);
+  els.modelCount.textContent = `${editors.length} 个模型`;
+  els.addModelButton.disabled = editors.length >= maxPathModels;
+  updateAnalysisCount();
+}
+
+function collectPathModel(editor) {
+  const analysis = editor.querySelector(".model-analysis").value;
+  const stage = editor.querySelector(".model-stage-field input:checked")?.value || "first";
+  return {
+    name: editor.querySelector(".model-name").value.trim(),
+    analysis,
+    x: editor.querySelector(".model-x").value,
+    y: editor.querySelector(".model-y").value,
+    mediator: analysis === "mediation" || analysis === "moderated_mediation" ? editor.querySelector(".model-mediator").value || null : null,
+    moderator: analysis === "moderation" || analysis === "moderated_mediation" ? editor.querySelector(".model-moderator").value || null : null,
+    controls: selectedOptions(editor.querySelector(".model-controls")),
+    moderated_stage: analysis === "moderated_mediation" ? stage : "first",
+  };
+}
+
+function collectPathModels() {
+  return [...els.pathModelList.querySelectorAll(".path-model-editor")].map(collectPathModel);
+}
+
+function validatePathModelEditor(editor, announce = true) {
+  const model = collectPathModel(editor);
+  const roles = [model.x, model.y, model.mediator, model.moderator].filter(Boolean);
+  let message = "";
+  if (!model.name) message = "请输入模型名称。";
+  else if (!model.x || !model.y) message = "请选择自变量 X 和因变量 Y。";
+  else if ((model.analysis === "mediation" || model.analysis === "moderated_mediation") && !model.mediator) message = "该模型需要选择中介变量 M。";
+  else if ((model.analysis === "moderation" || model.analysis === "moderated_mediation") && !model.moderator) message = "该模型需要选择调节变量 W。";
+  else if (new Set(roles).size !== roles.length) message = "X、Y、M、W 需要使用不同变量。";
+  else if (model.controls.some((control) => roles.includes(control))) message = "控制变量不能与 X、Y、M、W 重复。";
+  editor.querySelector(".model-validation").textContent = announce ? message : "";
+  return !message;
+}
+
 function collectAnalysisPayload() {
   const analysisInputs = [...document.querySelectorAll("input[name='analysis']")];
   const analyses = Object.fromEntries(analysisInputs.map((input) => [input.value, input.checked]));
-  analyses.moderated_stage = document.querySelector("input[name='moderatedStage']:checked").value;
+  analyses.regression = false;
+  analyses.mediation = false;
+  analyses.moderation = false;
+  analyses.moderated_mediation = false;
   analyses.correlation = els.correlationMethod.value;
   return {
     dataset_id: state.dataset.id,
     sheet_name: els.sheetSelect.value || state.dataset.sheetName || null,
     missing_codes: ["", 999],
     scales: collectScales(),
-    roles: {
-      x: els.roleX.value,
-      y: els.roleY.value,
-      mediator: els.roleM.value || null,
-      moderator: els.roleW.value || null,
-      controls: selectedOptions(els.roleControls),
-    },
+    models: collectPathModels(),
     analyses,
     inference: {
       alpha: Number(els.alphaInput.value),
@@ -647,13 +893,14 @@ function collectAnalysisPayload() {
 
 function validateAnalysis(payload) {
   const selected = Object.entries(payload.analyses).filter(([key, value]) => typeof value === "boolean" && value).map(([key]) => key);
-  if (!selected.length) return "请至少选择一项分析。";
+  if (!selected.length && !payload.models.length) return "请至少选择一项全局分析或添加一条回归路径。";
   if (["cfa", "harman", "ulmc"].some((name) => payload.analyses[name]) && !payload.scales.length) return "CFA 与共同方法偏差检验需要至少一个量表。";
-  if ((payload.analyses.mediation || payload.analyses.moderated_mediation) && !payload.roles.mediator) return "中介分析需要指定中介变量 M。";
-  if ((payload.analyses.moderation || payload.analyses.moderated_mediation) && !payload.roles.moderator) return "调节分析需要指定调节变量 W。";
-  const assignedRoles = [payload.roles.x, payload.roles.y, payload.roles.mediator, payload.roles.moderator].filter(Boolean);
-  if (new Set(assignedRoles).size !== assignedRoles.length) return "X、Y、M、W 需要分配不同变量。";
-  if (payload.roles.controls.some((control) => assignedRoles.includes(control))) return "控制变量不能与 X、Y、M、W 重复。";
+  if (payload.analyses.descriptives && !payload.scales.length && !payload.models.length) return "描述性统计至少需要一个量表或一条回归路径。";
+  const modelEditors = [...els.pathModelList.querySelectorAll(".path-model-editor")];
+  const modelsValid = modelEditors.map((editor) => validatePathModelEditor(editor)).every(Boolean);
+  if (!modelsValid) return "请完成所有路径模型的变量配置。";
+  const modelNames = payload.models.map((model) => model.name);
+  if (new Set(modelNames).size !== modelNames.length) return "路径模型名称不能重复。";
   if (!(payload.inference.alpha > 0 && payload.inference.alpha < 0.5)) return "显著性水平 α 必须在 0 与 0.5 之间。";
   if (!Number.isInteger(payload.inference.bootstrap_samples) || payload.inference.bootstrap_samples < 200 || payload.inference.bootstrap_samples > 20000) return "Bootstrap 次数应为 200 至 20000 的整数。";
   return "";
@@ -767,7 +1014,9 @@ function finishJob(job) {
     failJob(job.error || job.message || "分析任务未完成。");
     return;
   }
-  const partial = job.status === "completed_with_errors" || (job.summary?.failed_modules || []).length > 0;
+  const partial = job.status === "completed_with_errors"
+    || (job.summary?.failed_modules || []).length > 0
+    || (job.summary?.failed_models || []).length > 0;
   setProgress(
     100,
     partial ? "分析部分完成" : "分析完成",
@@ -839,7 +1088,76 @@ function renderStructuredResult(container, data, fallbackTitle) {
   const scalarEntries = entries.filter(([, value]) => isScalar(value));
   const complexEntries = entries.filter(([, value]) => !isScalar(value));
   if (scalarEntries.length) container.append(buildMetricSection(fallbackTitle, scalarEntries));
-  complexEntries.forEach(([key, value]) => container.append(buildResultSection(humanizeKey(key), value)));
+  complexEntries.forEach(([key, value]) => {
+    if (key === "path_models" && Array.isArray(value)) container.append(buildPathModelsSection(value));
+    else container.append(buildResultSection(humanizeKey(key), value));
+  });
+}
+
+function buildPathModelsSection(models) {
+  const section = document.createElement("section");
+  section.className = "result-section path-model-results";
+  const heading = document.createElement("h3");
+  heading.textContent = "回归路径模型";
+  const list = document.createElement("div");
+  list.className = "path-result-list";
+  models.forEach((model, index) => {
+    const article = document.createElement("article");
+    article.className = "path-result-item";
+    const header = document.createElement("div");
+    header.className = "path-result-head";
+    const title = document.createElement("div");
+    const name = document.createElement("strong");
+    name.textContent = model.name || `路径模型 ${index + 1}`;
+    const meta = document.createElement("small");
+    const artifactCount = Array.isArray(model.artifacts) ? model.artifacts.length : 0;
+    const formula = pathModelFormula(model.config || {});
+    meta.textContent = `${model.id || `model-${String(index + 1).padStart(2, "0")}`} · ${analysisTypeLabel(model.analysis)}${formula ? ` · ${formula}` : ""}${artifactCount ? ` · ${artifactCount} 个图表` : ""}`;
+    title.append(name, meta);
+    const badge = document.createElement("span");
+    const failed = model.status === "error";
+    badge.className = `path-result-status${failed ? " is-error" : ""}`;
+    badge.textContent = failed ? "失败" : "完成";
+    header.append(title, badge);
+    article.append(header);
+
+    if (model.error) {
+      const error = document.createElement("p");
+      error.className = "path-result-error";
+      error.textContent = model.error;
+      article.append(error);
+    }
+    if (isPlainObject(model.result) && Object.keys(model.result).length) {
+      const content = document.createElement("div");
+      content.className = "path-result-content";
+      const entries = Object.entries(model.result).filter(([key]) => key !== "artifacts");
+      const scalar = entries.filter(([, value]) => isScalar(value));
+      if (scalar.length) content.append(buildKeyValueTable(scalar));
+      entries.filter(([, value]) => !isScalar(value)).forEach(([key, value]) => {
+        content.append(buildResultSection(humanizeKey(key), value));
+      });
+      article.append(content);
+    }
+    list.append(article);
+  });
+  section.append(heading, list);
+  return section;
+}
+
+function analysisTypeLabel(value) {
+  const labels = {
+    regression: "主效应回归",
+    mediation: "中介模型",
+    moderation: "调节模型",
+    moderated_mediation: "被调节的中介模型",
+  };
+  return labels[value] || String(value || "路径分析");
+}
+
+function pathModelFormula(config) {
+  if (!config.x || !config.y) return "";
+  const chain = config.mediator ? `${config.x} → ${config.mediator} → ${config.y}` : `${config.x} → ${config.y}`;
+  return config.moderator ? `${chain}（W: ${config.moderator}）` : chain;
 }
 
 function buildMetricSection(title, entries) {
@@ -1041,21 +1359,23 @@ function clearVariableConfiguration() {
   state.runId = null;
   forgetSavedJob();
   state.scaleSequence = 0;
+  state.modelSequence = 0;
   els.scaleList.replaceChildren();
+  els.pathModelList.replaceChildren();
   els.resultSummary.replaceChildren();
   els.resultDiagnostics.replaceChildren();
   els.artifactList.replaceChildren();
   els.resultWorkspace.classList.add("is-hidden");
   els.rerunButton.classList.add("is-hidden");
   refreshScaleIndices();
+  refreshPathModelIndices();
   [els.variableError, els.analysisError, els.jobError].forEach(hideAlert);
 }
 
 function updateAnalysisCount() {
-  const count = document.querySelectorAll("input[name='analysis']:checked").length;
-  els.analysisCount.textContent = `${count} 项分析`;
-  const moderatedMediation = document.querySelector("input[name='analysis'][value='moderated_mediation']")?.checked;
-  els.stageFieldset.disabled = !moderatedMediation;
+  const globalCount = document.querySelectorAll("input[name='analysis']:checked").length;
+  const modelCount = els.pathModelList?.querySelectorAll(".path-model-editor").length || 0;
+  els.analysisCount.textContent = `${globalCount} 项全局 · ${modelCount} 个路径`;
 }
 
 function resetApplication() {
@@ -1068,6 +1388,7 @@ function resetApplication() {
   state.pollFailures = 0;
   state.seenLogs.clear();
   state.scaleSequence = 0;
+  state.modelSequence = 0;
   els.fileInput.value = "";
   els.fileLabel.textContent = "选择数据文件";
   els.fileMeta.textContent = "CSV 或 XLSX，最大 100 MB";
@@ -1076,7 +1397,9 @@ function resetApplication() {
   els.datasetContext.textContent = "新分析";
   els.dataReview.classList.add("is-hidden");
   els.scaleList.replaceChildren();
+  els.pathModelList.replaceChildren();
   refreshScaleIndices();
+  refreshPathModelIndices();
   [els.uploadError, els.variableError, els.analysisError, els.jobError].forEach(hideAlert);
   document.querySelectorAll("[data-step-target]").forEach((button, index) => {
     button.disabled = index !== 0;
@@ -1209,9 +1532,12 @@ function humanizeKey(key) {
     variable: "变量", term: "变量", mean: "均值", std: "标准差", n: "样本量", r_squared: "R²",
     adj_r_squared: "调整 R²", interpretation: "结论", warnings: "提示", notes: "备注",
     input_rows: "输入样本量", completed_modules: "已完成模块", failed_modules: "失败模块",
+    path_models: "路径模型", completed_models: "已完成路径", failed_models: "失败路径",
+    id: "模型编号", name: "模型名称", analysis: "模型类型", status: "运行状态", error: "错误",
     cfa_fit: "CFA 模型拟合", harman_first_component_percent: "Harman 第一因子解释率",
     mediation_indirect: "中介间接效应", moderation_interaction: "调节交互项",
     moderated_mediation_index: "被调节的中介指数", ci_low: "置信区间下限", ci_high: "置信区间上限",
+    path_models: "回归路径模型", model_id: "模型编号", model_name: "模型名称", model_type: "模型类型",
   };
   const normalized = String(key).toLowerCase();
   return labels[normalized] || String(key).replaceAll("_", " ");

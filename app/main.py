@@ -30,7 +30,7 @@ from .runner import run_full_analysis, summarize_results
 from .schemas import AnalysisRequest
 
 
-app = FastAPI(title="经管论文数据自动处理器", version="0.1.0")
+app = FastAPI(title="经管论文数据自动处理器", version="0.2.0")
 app.mount("/static", StaticFiles(directory=RESOURCE_ROOT / "app" / "static"), name="static")
 templates = Environment(
     loader=FileSystemLoader(RESOURCE_ROOT / "app" / "templates"),
@@ -185,7 +185,9 @@ def _run_job(job_id: str, run_id: str, request: AnalysisRequest, input_path: Pat
     try:
         summary, artifacts = run_full_analysis(input_path, request, run_id, run_dir, progress)
         completed_status = (
-            "completed_with_errors" if summary.get("failed_modules") else "completed"
+            "completed_with_errors"
+            if summary.get("failed_modules") or summary.get("failed_models")
+            else "completed"
         )
         artifact_payload = _artifact_payload(run_id, artifacts)
         _update_job(
@@ -313,7 +315,7 @@ def run_status(run_id: str) -> dict[str, Any]:
             "run_id": run_id,
             "status": (
                 "completed_with_errors"
-                if summary.get("failed_modules")
+                if summary.get("failed_modules") or summary.get("failed_models")
                 else "completed"
             ),
             "progress": 100,
@@ -385,5 +387,11 @@ def load_demo_dataset() -> dict[str, Any]:
             {"name": "创新绩效", "items": ["创新绩效1", "创新绩效2", "创新绩效3"], "reverse_items": [], "minimum": 1, "maximum": 7, "min_valid_ratio": 0.8},
         ],
         "roles": {"x": "创新氛围", "y": "创新绩效", "mediator": "工作投入", "moderator": "领导支持", "controls": ["年龄", "性别"]},
+        "models": [
+            {"name": "创新氛围对创新绩效的主效应", "analysis": "regression", "x": "创新氛围", "y": "创新绩效", "controls": ["年龄", "性别"]},
+            {"name": "工作投入的中介作用", "analysis": "mediation", "x": "创新氛围", "y": "创新绩效", "mediator": "工作投入", "controls": ["年龄", "性别"]},
+            {"name": "领导支持的调节作用", "analysis": "moderation", "x": "创新氛围", "y": "创新绩效", "moderator": "领导支持", "controls": ["年龄", "性别"]},
+            {"name": "领导支持调节第一阶段中介路径", "analysis": "moderated_mediation", "x": "创新氛围", "y": "创新绩效", "mediator": "工作投入", "moderator": "领导支持", "controls": ["年龄", "性别"], "moderated_stage": "first"},
+        ],
     }
     return response

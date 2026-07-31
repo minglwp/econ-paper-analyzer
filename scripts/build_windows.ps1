@@ -15,7 +15,8 @@ if ([string]::IsNullOrWhiteSpace($Python)) {
         $Python = $ProjectPython
     }
     else {
-        $Python = (Get-Command python -CommandType Application -ErrorAction Stop).Path
+        $Python = Get-Command python -CommandType Application -ErrorAction Stop |
+            Select-Object -First 1 -ExpandProperty Path
     }
 }
 if (-not (Test-Path -LiteralPath $Python)) {

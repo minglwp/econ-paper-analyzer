@@ -20,6 +20,9 @@
       </div>
       <div class="topbar-actions">
         <span class="local-status"><span aria-hidden="true"></span>本地运行</span>
+        <input type="file" id="settingsFileInput" accept="application/json,.json" hidden>
+        <button class="button button-quiet" type="button" id="importSettingsButton" disabled title="导入分析配置">导入</button>
+        <button class="button button-quiet" type="button" id="exportSettingsButton" disabled title="导出当前分析配置">导出</button>
         <button class="button button-quiet" type="button" id="resetButton">重新开始</button>
       </div>
     </header>
@@ -248,6 +251,16 @@
           </div>
         </section>
 
+        <section class="ordinal-confirmation is-hidden" id="ordinalConfirmation" aria-labelledby="ordinalConfirmationTitle">
+          <div class="section-divider-heading">
+            <div>
+              <h3 id="ordinalConfirmationTitle">有序连续变量确认</h3>
+              <span>仅适用于具有明确顺序且可视为等距的 X 或控制变量</span>
+            </div>
+          </div>
+          <div class="ordinal-confirmation-list" id="ordinalVariableList"></div>
+        </section>
+
         <div class="inline-alert is-hidden" id="analysisError" role="alert"></div>
         <div class="step-actions">
           <button class="button button-quiet" type="button" data-prev-step="variables"><span aria-hidden="true">←</span> 返回</button>
@@ -386,10 +399,23 @@
           <span>调节变量 W</span>
           <select class="model-moderator"></select>
         </label>
-        <label class="field model-controls-field">
-          <span>控制变量（可多选）</span>
-          <select class="model-controls" multiple size="5"></select>
-        </label>
+        <div class="field model-controls-field">
+          <span>控制变量</span>
+          <div class="model-control-picker">
+            <label class="picker-pane field">
+              <span>可用变量 <small class="control-available-count"></small></span>
+              <select class="model-controls-available" multiple size="5" aria-label="可用控制变量"></select>
+            </label>
+            <div class="picker-actions" aria-label="移动控制变量">
+              <button class="picker-arrow assign-controls" type="button" title="将选中变量加入控制变量" aria-label="将选中变量加入控制变量">→</button>
+              <button class="picker-arrow unassign-controls" type="button" title="将选中变量移出控制变量" aria-label="将选中变量移出控制变量">←</button>
+            </div>
+            <div class="picker-pane field">
+              <span>已选控制变量 <small class="control-selected-count"></small></span>
+              <div class="model-controls-selected-list" role="listbox" aria-label="已选控制变量" aria-multiselectable="true" tabindex="0"></div>
+            </div>
+          </div>
+        </div>
         <fieldset class="segmented-field model-stage-field">
           <legend>调节阶段</legend>
           <div class="segmented-control">

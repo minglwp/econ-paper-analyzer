@@ -13,11 +13,12 @@
 - 被调节中介：PROCESS Model 7（第一阶段）与 Model 14（第二阶段），报告条件间接效应和被调节中介指数的 Bootstrap 区间；
 - 多模型路径清单：可新增、复制或删除最多 20 条主效应、中介、调节及被调节中介路径；每条路径独立选择 X、Y、M、W、控制变量与调节阶段；
 - 量表双栏编辑器：左侧显示可用数值题项，通过箭头移入右侧，并可逐题标记反向计分；同一题项不会被重复分配给多个量表；
+- 设置快照：可导出量表、路径、控制变量和统计推断参数，并在上传相同结构的数据后重新导入；
 - 每次运行保存数据哈希、实际配置、随机种子、软件版本、日志和机器可读结果。
 
 ## macOS 桌面软件
 
-Apple Silicon（arm64）发行包提供 `.dmg` 与 `.zip` 两种格式，支持 macOS 14 及以上版本。下载后可将 `Econ Paper Analyzer.app` 拖入“应用程序”目录并双击运行；重复双击会重新打开已有页面，不会重复启动分析服务。
+Apple Silicon（arm64）发行包提供 `.dmg` 与 `.zip` 两种格式，支持 macOS 14 及以上版本。下载后可将 `Econ Paper Analyzer.app` 拖入“应用程序”目录并双击运行。桌面版使用应用内 WebKit 窗口和 Python 直连桥接，不会监听 `127.0.0.1` 端口、不需要浏览器，也不存在浏览器页面与后端版本错配的问题。
 
 当前发行包采用 ad-hoc 签名，尚未使用 Apple Developer ID 公证。首次打开时可能需要在 Finder 中右键应用并选择“打开”。正式对外分发前应完成 Developer ID 签名、公证和 stapling。
 
@@ -50,7 +51,8 @@ cd econ-paper-analyzer
 2. 为每个构念添加量表，从左侧选择题项并用箭头移入右侧；按需标记反向题并设置量表上下限。
 3. 添加任意多条路径模型，为每条路径分别选择模型类型、X、Y、M、W、控制变量和调节阶段。
 4. 选择全局分析模块、Bootstrap 次数、置信区间和相关方法。
-5. 先查看预检提示，再运行并下载报告或完整审计包。
+5. 需要复用方案时，在顶栏导出设置；下次先上传数据，再导入该 JSON 设置文件。
+6. 先查看预检提示，再运行并下载报告或完整审计包。
 
 界面中的“载入示例”会使用 `examples/demo_survey.csv` 填好主效应、中介、调节和 Model 7 四条路径，可用于验证全流程。
 
@@ -106,7 +108,19 @@ PYTHONPATH=. .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 87
 ./scripts/build_macos.sh
 ```
 
-生成的 `.app` 位于 `dist/macos-arm64/`，ZIP、DMG 和 SHA-256 校验文件位于 `dist/releases/v<版本号>/`。发行包目录已加入 `.gitignore`，应通过 GitHub Release 上传，不能提交到 Git 历史。
+脚本结束时会打印临时 staging `.app` 的实际路径；ZIP、DMG 和 SHA-256 校验文件位于 `dist/releases/v<版本号>/`。发行包目录已加入 `.gitignore`，应通过 GitHub Release 上传，不能提交到 Git 历史。当前包使用 ad-hoc 签名且未做 Apple Developer ID 公证；发布前还必须通过 macOS 原生窗口测试。
+
+## 构建 Windows 发行包
+
+Windows 10/11 x64 构建机需要 x64 Python 3.11-3.13、PowerShell 及 Microsoft Edge WebView2 Runtime（Windows 11 通常已内置）：
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements-build.txt
+.\scripts\build_windows.ps1
+```
+
+该脚本生成免安装的 `econ-paper-analyzer-windows-x64-v<版本号>.zip` 与 `SHA256SUMS.txt`，位于 `dist/releases/v<版本号>/`。解压后运行 `econ-paper-analyzer\econ-paper-analyzer.exe`。提交带有 `v*` 标签的 GitHub 仓库，或在 Actions 页面手动运行 `Windows Package`，会在原生 Windows runner 生成相同 ZIP 并作为构建产物上传。
 
 ## 许可
 

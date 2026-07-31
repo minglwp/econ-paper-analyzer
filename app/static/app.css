@@ -776,7 +776,8 @@ select[multiple] option {
   gap: 8px;
 }
 
-.item-picker {
+.item-picker,
+.model-control-picker {
   min-width: 0;
   display: grid;
   grid-template-columns: minmax(180px, 1fr) 42px minmax(220px, 1fr);
@@ -830,7 +831,8 @@ select[multiple] option {
   border-color: var(--teal);
 }
 
-.scale-selected-list {
+.scale-selected-list,
+.model-controls-selected-list {
   overflow: auto;
   background: var(--surface);
   border: 1px solid var(--border-strong);
@@ -1367,6 +1369,52 @@ input[type="checkbox"]:checked::after {
   overflow: auto;
 }
 
+.correlation-matrix table {
+  min-width: max-content;
+}
+
+.correlation-matrix th,
+.correlation-matrix td {
+  min-width: 88px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.correlation-matrix th:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  min-width: 124px;
+  text-align: left;
+}
+
+.correlation-matrix thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.correlation-matrix thead th:first-child {
+  z-index: 3;
+}
+
+.correlation-matrix tbody th {
+  background: var(--surface);
+}
+
+.correlation-matrix td.correlation-empty {
+  color: transparent;
+  background: var(--surface-subtle);
+}
+
+.correlation-note {
+  margin: 0;
+  padding: 8px 10px;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+}
+
 .result-notes {
   margin: 0;
   padding-left: 19px;
@@ -1446,6 +1494,57 @@ input[type="checkbox"]:checked::after {
   gap: 12px;
 }
 
+.ordinal-confirmation {
+  padding: 18px 22px 22px;
+  border-top: 1px solid var(--border);
+}
+
+.ordinal-confirmation .section-divider-heading {
+  margin-bottom: 10px;
+}
+
+.ordinal-confirmation .section-divider-heading span {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.ordinal-confirmation-list {
+  display: grid;
+  gap: 8px;
+}
+
+.ordinal-confirmation-row {
+  min-height: 56px;
+  padding: 9px 11px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.ordinal-confirmation-row:has(input:checked) {
+  background: #f5fbfa;
+  border-color: #a9d4cf;
+}
+
+.ordinal-confirmation-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.ordinal-confirmation-copy small {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .path-model-editor {
   min-width: 0;
   border: 1px solid var(--border-strong);
@@ -1504,8 +1603,10 @@ input[type="checkbox"]:checked::after {
   grid-column: span 2;
 }
 
-.model-controls-field select {
+.model-control-picker .model-controls-available,
+.model-control-picker .model-controls-selected-list {
   min-height: 126px;
+  height: 126px;
 }
 
 .model-stage-field {
@@ -1726,6 +1827,7 @@ input[type="checkbox"]:checked::after {
 
   .scale-meta-fields,
   .item-picker,
+  .model-control-picker,
   .path-model-fields {
     grid-template-columns: 1fr;
   }
@@ -1736,7 +1838,9 @@ input[type="checkbox"]:checked::after {
   }
 
   .scale-available-items,
-  .scale-selected-list {
+  .scale-selected-list,
+  .model-control-picker .model-controls-available,
+  .model-control-picker .model-controls-selected-list {
     height: 180px;
     min-height: 180px;
   }

@@ -55,12 +55,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--png", type=Path, required=True)
     parser.add_argument("--iconset", type=Path, required=True)
+    parser.add_argument("--ico", type=Path)
     args = parser.parse_args()
 
     image = draw_icon()
     args.png.parent.mkdir(parents=True, exist_ok=True)
     args.iconset.mkdir(parents=True, exist_ok=True)
     image.save(args.png)
+    if args.ico:
+        args.ico.parent.mkdir(parents=True, exist_ok=True)
+        image.save(args.ico, format="ICO", sizes=[(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)])
     for size, filename in ICON_SIZES:
         resized = image.resize((size, size), Image.Resampling.LANCZOS)
         resized.save(args.iconset / filename)

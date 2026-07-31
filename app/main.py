@@ -30,7 +30,7 @@ from .runner import run_full_analysis, summarize_results
 from .schemas import AnalysisRequest
 
 
-app = FastAPI(title="经管论文数据自动处理器", version="0.2.0")
+app = FastAPI(title="经管论文数据自动处理器", version="0.3.6")
 app.mount("/static", StaticFiles(directory=RESOURCE_ROOT / "app" / "static"), name="static")
 templates = Environment(
     loader=FileSystemLoader(RESOURCE_ROOT / "app" / "templates"),

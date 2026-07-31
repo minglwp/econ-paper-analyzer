@@ -21,6 +21,7 @@ def test_home_health_and_demo_upload():
     assert payload["rows"] == 320
     assert "suggested_config" in payload
     assert "创新氛围1" in payload["columns"]
+    assert payload["quality"]["unique_values"]["性别"] == 2
 
 
 def test_uppercase_csv_upload_can_be_inspected():
@@ -71,6 +72,11 @@ def test_demo_dataset_can_start_and_complete_job():
         time.sleep(0.1)
     assert job["status"] == "completed", job
     assert job["result"]["input_rows"] == 320
+    preview = job["result"]["in_app_preview"]
+    assert preview["描述性统计"]
+    assert preview["相关分析"]
+    assert preview["回归分析"]["模型摘要"]
+    assert preview["回归分析"]["关键回归系数"]
     assert any(artifact["name"] == "report.html" for artifact in job["artifacts"])
     recovered = client.get(f"/api/runs/{run_id}")
     assert recovered.status_code == 200

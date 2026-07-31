@@ -141,6 +141,14 @@ def prepare_analysis_data(
         "notes": [
             "越界值已标记但未自动删除；请根据问卷编码核对。" if range_violations else "未发现量表越界值。",
             "首版回归类模型采用完全案例分析；CFA 采用 MLW 与完全案例分析。",
+            *(
+                [
+                    "以下 X/控制变量已由用户确认按有序连续变量处理: "
+                    + ", ".join(request.inference.treat_as_continuous)
+                ]
+                if request.inference.treat_as_continuous
+                else []
+            ),
         ],
     }
     return frame, item_data, quality
@@ -232,7 +240,9 @@ def _validate_regression_variable_types(
     data: pd.DataFrame,
     continuous: list[str],
     predictors: list[str],
+    treat_as_continuous: set[str] | None = None,
 ) -> None:
+    confirmed = treat_as_continuous or set()
     discrete = [
         f"{variable}（{data[variable].nunique()} 个取值）"
         for variable in dict.fromkeys(continuous)
@@ -246,13 +256,17 @@ def _validate_regression_variable_types(
     ambiguous = [
         f"{variable}（{data[variable].nunique()} 类）"
         for variable in dict.fromkeys(predictors)
-        if data[variable].nunique() in {3, 4}
+        if data[variable].nunique() in {3, 4} and variable not in confirmed
     ]
     if ambiguous:
         raise ValueError(
-            "3/4 分类的 X 或控制变量需先转换为哑变量: "
+            "3/4 分类的 X 或控制变量需先转换为哑变量，或在分析设置中人工确认按有序连续变量处理: "
             + ", ".join(ambiguous)
         )
+
+
+def _confirmed_predictors(request: AnalysisRequest) -> set[str]:
+    return set(request.inference.treat_as_continuous)
 
 
 def run_regressions(frame: pd.DataFrame, request: AnalysisRequest) -> dict[str, Any]:
@@ -265,6 +279,7 @@ def run_regressions(frame: pd.DataFrame, request: AnalysisRequest) -> dict[str, 
         data,
         [roles.y, *([roles.mediator] if roles.mediator else [])],
         [roles.x, *roles.controls],
+        _confirmed_predictors(request),
     )
     _, main_model = fit_ols(
         data,
@@ -305,7 +320,10 @@ def run_mediation(frame: pd.DataFrame, request: AnalysisRequest) -> dict[str, An
     columns = [roles.x, roles.mediator, roles.y, *roles.controls]
     data = _complete_model_data(frame, columns)
     _validate_regression_variable_types(
-        data, [roles.y, roles.mediator], [roles.x, *roles.controls]
+        data,
+        [roles.y, roles.mediator],
+        [roles.x, *roles.controls],
+        _confirmed_predictors(request),
     )
     a_predictors = [*roles.controls, roles.x]
     b_predictors = [*roles.controls, roles.x, roles.mediator]
@@ -469,7 +487,10 @@ def run_moderation(
     columns = [roles.x, roles.y, roles.moderator, *roles.controls]
     data = _complete_model_data(frame, columns)
     _validate_regression_variable_types(
-        data, [roles.y, roles.moderator], [roles.x, *roles.controls]
+        data,
+        [roles.y, roles.moderator],
+        [roles.x, *roles.controls],
+        _confirmed_predictors(request),
     )
     x_mean = float(data[roles.x].mean())
     w_mean = float(data[roles.moderator].mean())
@@ -621,6 +642,7 @@ def run_moderated_mediation(frame: pd.DataFrame, request: AnalysisRequest) -> di
         data,
         [roles.y, roles.mediator, roles.moderator],
         [roles.x, *roles.controls],
+        _confirmed_predictors(request),
     )
     x_mean = float(data[roles.x].mean())
     m_mean = float(data[roles.mediator].mean())

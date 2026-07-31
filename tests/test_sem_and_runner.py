@@ -37,6 +37,15 @@ def test_full_runner_exports(tmp_path: Path, demo_request):
         run_dir,
     )
     assert summary["input_rows"] == 320
+    preview = summary["in_app_preview"]
+    ulmc_preview = preview["共同方法偏差：ULMC"]
+    assert ulmc_preview
+    assert list(ulmc_preview[0]) == ["指标", "特质模型拟合结果", "方法因子模型拟合", "对比结果"]
+    correlation_preview = preview["相关分析"]
+    assert correlation_preview["display"] == "correlation_lower_triangle"
+    assert correlation_preview["variables"]
+    assert correlation_preview["rows"][0]["values"][0] == ""
+    assert correlation_preview["rows"][1]["values"][0].endswith("***")
     assert {artifact["name"] for artifact in artifacts} >= {
         "report.html",
         "tables.xlsx",

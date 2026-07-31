@@ -194,6 +194,8 @@ def test_runner_executes_independent_models_and_preserves_plot_artifacts(
     assert [path["id"] for path in paths] == ["model-01", "model-02"]
     assert [path["status"] for path in paths] == ["ok", "ok"]
     assert summary["completed_models"] == ["model-01", "model-02"]
+    assert summary["path_models"][0]["result"]["交互项"]
+    assert summary["path_models"][0]["result"]["简单斜率"]
 
     first_terms = {
         row["term"] for row in paths[0]["result"]["models"][0]["coefficients"]

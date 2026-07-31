@@ -20,29 +20,37 @@ const state = {
   pollTimer: null,
   pollFailures: 0,
   seenLogs: new Set(),
+  treatAsContinuous: new Set(),
 };
 
 const stepOrder = ["upload", "variables", "analysis", "results"];
 const terminalStatuses = new Set(["completed", "completed_with_errors", "complete", "succeeded", "success", "done", "failed", "error", "cancelled"]);
 const savedJobKey = "econ-paper-analyzer:last-job";
 const maxPathModels = 20;
+const settingsFormat = "econ-paper-analyzer/settings";
+const settingsVersion = 1;
+const isDesktopRuntime = window.__EPA_RUNTIME__ === "desktop";
 
 const els = {};
+let savedJobResumeStarted = false;
+let savedJobMemory = null;
 
 document.addEventListener("DOMContentLoaded", () => {
   cacheElements();
   bindEvents();
   updateAnalysisCount();
-  void resumeSavedJob();
+  initializeDesktopBridge();
 });
 
 function cacheElements() {
   [
-    "datasetContext", "resetButton", "fileInput", "chooseFileButton", "uploadButton", "demoButton", "uploadZone",
+    "datasetContext", "resetButton", "settingsFileInput", "importSettingsButton", "exportSettingsButton",
+    "fileInput", "chooseFileButton", "uploadButton", "demoButton", "uploadZone",
     "fileLabel", "fileMeta", "uploadState", "uploadError", "dataReview", "dataCaption", "sheetField",
     "sheetSelect", "qualityStats", "columnCount", "columnQuality", "warningCount", "dataWarnings",
     "previewTable", "addScaleButton", "scaleList", "scaleEmpty", "scaleCount", "variableError", "variablesNext",
     "analysisToggles", "analysisCount", "addModelButton", "pathModelList", "pathModelEmpty", "modelCount",
+    "ordinalConfirmation", "ordinalVariableList",
     "correlationMethod", "harmanThreshold", "alphaInput",
     "bootstrapInput", "seedInput", "ciMethod", "robustSe", "analysisError", "runAnalysisButton",
     "jobBadge", "jobProgress", "progressTitle", "progressMessage", "progressPercent", "progressBar",
@@ -52,11 +60,14 @@ function cacheElements() {
 }
 
 function bindEvents() {
-  els.chooseFileButton.addEventListener("click", () => els.fileInput.click());
+  els.chooseFileButton.addEventListener("click", chooseDatasetFile);
   els.fileInput.addEventListener("change", (event) => selectFile(event.target.files[0]));
   els.uploadButton.addEventListener("click", handleUpload);
   els.demoButton.addEventListener("click", handleDemo);
   els.resetButton.addEventListener("click", resetApplication);
+  els.importSettingsButton.addEventListener("click", () => els.settingsFileInput.click());
+  els.settingsFileInput.addEventListener("change", handleImportSettings);
+  els.exportSettingsButton.addEventListener("click", () => { void exportSettings(); });
   els.addScaleButton.addEventListener("click", () => addScale());
   els.addModelButton.addEventListener("click", () => addPathModel());
   els.variablesNext.addEventListener("click", handleVariablesNext);
@@ -98,7 +109,56 @@ function bindEvents() {
 }
 
 // API adapter functions keep backend response mapping in one place.
+function desktopBridge() {
+  const api = window.pywebview?.api;
+  return api && typeof api.upload_file === "function" ? api : null;
+}
+
+function initializeDesktopBridge() {
+  const resumeOnce = () => {
+    if (savedJobResumeStarted) return;
+    savedJobResumeStarted = true;
+    void resumeSavedJob();
+  };
+  if (!isDesktopRuntime) {
+    resumeOnce();
+    return;
+  }
+  if (desktopBridge()) {
+    resumeOnce();
+    return;
+  }
+  window.addEventListener("pywebviewready", resumeOnce, { once: true });
+}
+
+async function chooseDatasetFile() {
+  const bridge = desktopBridge();
+  if (!bridge) {
+    els.fileInput.click();
+    return;
+  }
+  hideAlert(els.uploadError);
+  try {
+    const raw = await bridge.choose_dataset_file();
+    if (!raw) return;
+    state.file = {
+      name: raw.filename || "未命名数据文件",
+      size: Number(raw.native_file_size) || 0,
+      nativeDataset: raw,
+    };
+    els.fileLabel.textContent = state.file.name;
+    els.fileMeta.textContent = `${fileExtension(state.file.name)} · ${formatBytes(state.file.size)}`;
+    els.uploadButton.disabled = false;
+    els.uploadState.textContent = "待导入";
+  } catch (error) {
+    showAlert(els.uploadError, error.message);
+    els.uploadState.textContent = "读取失败";
+  }
+}
+
 async function uploadDataset(file) {
+  const bridge = desktopBridge();
+  if (bridge) return bridge.upload_file(file.name, await fileToBase64(file));
   const response = await fetch(API.upload, {
     method: "POST",
     headers: {
@@ -111,6 +171,8 @@ async function uploadDataset(file) {
 }
 
 async function startAnalysis(payload) {
+  const bridge = desktopBridge();
+  if (bridge) return bridge.analyze(payload);
   const response = await fetch(API.analyze, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -120,21 +182,29 @@ async function startAnalysis(payload) {
 }
 
 async function loadDemo() {
+  const bridge = desktopBridge();
+  if (bridge) return bridge.load_demo();
   const response = await fetch(API.demo, { method: "POST", headers: { "Accept": "application/json" } });
   return parseApiResponse(response);
 }
 
 async function getDatasetSheet(datasetId, sheetName) {
+  const bridge = desktopBridge();
+  if (bridge) return bridge.get_dataset(datasetId, sheetName);
   const response = await fetch(API.dataset(datasetId, sheetName), { headers: { "Accept": "application/json" } });
   return parseApiResponse(response);
 }
 
 async function getJob(jobId) {
+  const bridge = desktopBridge();
+  if (bridge) return bridge.get_job(jobId);
   const response = await fetch(API.job(jobId), { headers: { "Accept": "application/json" } });
   return parseApiResponse(response);
 }
 
 async function getRun(runId) {
+  const bridge = desktopBridge();
+  if (bridge) return bridge.get_run(runId);
   const response = await fetch(API.run(runId), { headers: { "Accept": "application/json" } });
   return parseApiResponse(response);
 }
@@ -152,6 +222,18 @@ async function parseApiResponse(response) {
     throw new Error(message);
   }
   return data;
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("无法读取所选文件。"));
+    reader.onload = () => {
+      const value = String(reader.result || "");
+      resolve(value.includes(",") ? value.split(",", 2)[1] : value);
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 function normalizeUploadResponse(raw, file) {
@@ -193,6 +275,13 @@ function normalizeUploadResponse(raw, file) {
   const numericColumns = firstNumber(raw.numeric_columns, summary.numeric_columns)
     ?? columns.filter((column) => column.numeric).length;
   const sheets = raw.sheets || raw.sheet_names || summary.sheets || [];
+  const rawUniqueValues = raw.unique_values || summary.unique_values || {};
+  const uniqueValues = Object.fromEntries(
+    Object.entries(rawUniqueValues).flatMap(([name, value]) => {
+      const count = Number(value);
+      return Number.isInteger(count) && count >= 0 ? [[String(name), count]] : [];
+    }),
+  );
   const warnings = normalizeMessages(raw.warnings || summary.warnings || raw.diagnostics || []);
   const emptyColumns = Array.isArray(summary.empty_columns) ? summary.empty_columns : [];
   const constantColumns = Array.isArray(summary.constant_columns) ? summary.constant_columns : [];
@@ -212,6 +301,7 @@ function normalizeUploadResponse(raw, file) {
     columns,
     preview,
     warnings,
+    uniqueValues,
   };
 }
 
@@ -254,7 +344,15 @@ function normalizeArtifacts(rawArtifacts) {
     const url = artifact.url || artifact.href || artifact.download_url || artifact.path || "";
     const filename = artifact.filename || artifact.name || String(url).split("/").pop() || `文件 ${index + 1}`;
     const name = artifact.label || artifact.title || filename;
-    return { name: String(name), filename: String(filename), url: String(url), type: String(artifact.type || fileExtension(url || filename) || "FILE") };
+    return {
+      name: String(name),
+      filename: String(filename),
+      url: String(url),
+      type: String(artifact.type || fileExtension(url || filename) || "FILE"),
+      native: Boolean(artifact.native),
+      runId: String(artifact.run_id || ""),
+      artifactName: String(artifact.artifact_name || filename),
+    };
   }).filter((artifact) => artifact.url);
 }
 
@@ -282,7 +380,7 @@ async function handleUpload() {
   setUploading(true);
   hideAlert(els.uploadError);
   try {
-    const raw = await uploadDataset(state.file);
+    const raw = state.file.nativeDataset || await uploadDataset(state.file);
     state.dataset = normalizeUploadResponse(raw, state.file);
     if (!state.dataset.id) throw new Error("上传响应缺少 dataset_id。");
     clearVariableConfiguration();
@@ -332,6 +430,7 @@ function setUploading(uploading) {
   els.demoButton.disabled = uploading;
   els.uploadButton.disabled = uploading || !state.file;
   els.uploadButton.textContent = uploading ? "上传中…" : "上传";
+  updateSettingsButtons();
   if (uploading) els.uploadState.textContent = "读取中";
 }
 
@@ -345,6 +444,13 @@ function renderDataset(dataset) {
   renderWarnings(dataset.warnings, dataset);
   renderPreview(dataset.preview, dataset.columns);
   populateVariableControls();
+  updateSettingsButtons();
+}
+
+function updateSettingsButtons() {
+  const enabled = Boolean(state.dataset) && !els.uploadZone.classList.contains("is-uploading");
+  els.importSettingsButton.disabled = !enabled;
+  els.exportSettingsButton.disabled = !enabled;
 }
 
 function renderSheets(dataset) {
@@ -652,6 +758,53 @@ function modelVariableChoices() {
 function updateModelOptions() {
   if (!state.dataset) return;
   [...els.pathModelList.querySelectorAll(".path-model-editor")].forEach((editor) => populateModelEditorOptions(editor));
+  updateOrdinalConfirmations();
+}
+
+function ambiguousOrdinalPredictors(models = collectPathModels()) {
+  if (!state.dataset) return [];
+  const scaleNames = new Set(modelVariableChoices().scaleNames);
+  const candidates = new Set();
+  models.forEach((model) => {
+    [model.x, ...(Array.isArray(model.controls) ? model.controls : [])]
+      .filter(Boolean)
+      .forEach((name) => {
+        const uniqueCount = Number(state.dataset.uniqueValues?.[name]);
+        if (!scaleNames.has(name) && (uniqueCount === 3 || uniqueCount === 4)) candidates.add(name);
+      });
+  });
+  return [...candidates].sort((left, right) => left.localeCompare(right, "zh-CN"));
+}
+
+function updateOrdinalConfirmations() {
+  if (!els.ordinalConfirmation || !els.ordinalVariableList) return;
+  const candidates = ambiguousOrdinalPredictors();
+  state.treatAsContinuous = new Set(
+    [...state.treatAsContinuous].filter((name) => candidates.includes(name)),
+  );
+  els.ordinalConfirmation.classList.toggle("is-hidden", candidates.length === 0);
+  els.ordinalVariableList.replaceChildren(...candidates.map((name) => {
+    const count = state.dataset.uniqueValues[name];
+    const row = document.createElement("label");
+    row.className = "ordinal-confirmation-row";
+    const copy = document.createElement("span");
+    copy.className = "ordinal-confirmation-copy";
+    const title = document.createElement("strong");
+    title.textContent = name;
+    const detail = document.createElement("small");
+    detail.textContent = `${count} 个取值；确认后将按有序、等距的连续变量估计。`;
+    copy.append(title, detail);
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = state.treatAsContinuous.has(name);
+    input.setAttribute("aria-label", `确认 ${name} 按有序连续变量处理`);
+    input.addEventListener("change", () => {
+      if (input.checked) state.treatAsContinuous.add(name);
+      else state.treatAsContinuous.delete(name);
+    });
+    row.append(copy, input);
+    return row;
+  }));
 }
 
 function populateModelEditorOptions(editor, initial = null) {
@@ -662,7 +815,7 @@ function populateModelEditorOptions(editor, initial = null) {
     y: editor.querySelector(".model-y").value,
     mediator: editor.querySelector(".model-mediator").value,
     moderator: editor.querySelector(".model-moderator").value,
-    controls: selectedOptions(editor.querySelector(".model-controls")),
+    controls: modelControlNames(editor),
   };
   const mappings = [
     [editor.querySelector(".model-x"), values.x],
@@ -675,12 +828,7 @@ function populateModelEditorOptions(editor, initial = null) {
     appendGroupedOptions(select, scaleNames, baseNames);
     if (choices.includes(previous)) select.value = previous;
   });
-  const controls = editor.querySelector(".model-controls");
-  controls.replaceChildren();
-  appendGroupedOptions(controls, scaleNames, baseNames);
-  [...controls.options].forEach((option) => {
-    option.selected = (values.controls || []).includes(option.value);
-  });
+  refreshModelControlPicker(editor, values.controls || []);
 }
 
 function appendGroupedOptions(select, scaleNames, baseNames) {
@@ -694,6 +842,127 @@ function appendGroupedOptions(select, scaleNames, baseNames) {
   columnGroup.label = "原始字段";
   baseNames.filter((name) => !scaleNames.includes(name)).forEach((name) => columnGroup.append(new Option(name, name)));
   select.append(columnGroup);
+}
+
+function modelControlNames(editor) {
+  return [...editor.querySelectorAll(".model-controls-selected-list .picker-selected-item")]
+    .map((row) => row.dataset.item)
+    .filter(Boolean);
+}
+
+function activeModelRoleNames(editor) {
+  const analysis = editor.querySelector(".model-analysis").value;
+  const names = [
+    editor.querySelector(".model-x").value,
+    editor.querySelector(".model-y").value,
+  ];
+  if (analysis === "mediation" || analysis === "moderated_mediation") {
+    names.push(editor.querySelector(".model-mediator").value);
+  }
+  if (analysis === "moderation" || analysis === "moderated_mediation") {
+    names.push(editor.querySelector(".model-moderator").value);
+  }
+  return new Set(names.filter(Boolean));
+}
+
+function createSelectedModelControlRow(editor, item, selected = false) {
+  const row = document.createElement("div");
+  row.className = "picker-selected-item";
+  row.dataset.item = item;
+  row.setAttribute("role", "option");
+  row.setAttribute("aria-selected", String(selected));
+  row.tabIndex = 0;
+  if (selected) row.classList.add("is-selected");
+
+  const name = document.createElement("span");
+  name.className = "picker-item-name";
+  name.textContent = item;
+  name.title = item;
+  row.append(name);
+  row.addEventListener("click", () => toggleSelectedScaleRow(row));
+  row.addEventListener("dblclick", () => {
+    row.remove();
+    refreshModelControlPicker(editor);
+    validatePathModelEditor(editor, false);
+    updateOrdinalConfirmations();
+  });
+  return row;
+}
+
+function refreshModelControlPicker(editor, requestedControls = modelControlNames(editor)) {
+  const { scaleNames, baseNames } = modelVariableChoices();
+  const choices = [...new Set([...scaleNames, ...baseNames])];
+  const roles = activeModelRoleNames(editor);
+  const selectedRows = new Set(
+    [...editor.querySelectorAll('.model-controls-selected-list .picker-selected-item[aria-selected="true"]')]
+      .map((row) => row.dataset.item),
+  );
+  const controls = [...new Set(requestedControls)]
+    .filter((name) => choices.includes(name) && !roles.has(name));
+  const list = editor.querySelector(".model-controls-selected-list");
+  list.replaceChildren();
+  if (!controls.length) {
+    const empty = document.createElement("div");
+    empty.className = "picker-empty";
+    empty.textContent = "尚未选择控制变量";
+    list.append(empty);
+  } else {
+    controls.forEach((name) => list.append(createSelectedModelControlRow(editor, name, selectedRows.has(name))));
+  }
+
+  const available = editor.querySelector(".model-controls-available");
+  const previousSelection = selectedOptions(available);
+  const selected = new Set(controls);
+  const availableNames = choices.filter((name) => !roles.has(name) && !selected.has(name));
+  available.replaceChildren();
+  appendGroupedOptions(
+    available,
+    scaleNames.filter((name) => availableNames.includes(name)),
+    baseNames.filter((name) => availableNames.includes(name)),
+  );
+  [...available.options].forEach((option) => {
+    option.selected = previousSelection.includes(option.value);
+  });
+  editor.querySelector(".control-available-count").textContent = `${availableNames.length} 个`;
+  editor.querySelector(".control-selected-count").textContent = `${controls.length} 个`;
+  editor.querySelector(".assign-controls").disabled = availableNames.length === 0;
+  editor.querySelector(".unassign-controls").disabled = controls.length === 0;
+}
+
+function assignModelControls(editor) {
+  const available = editor.querySelector(".model-controls-available");
+  const controls = [...new Set([...modelControlNames(editor), ...selectedOptions(available)])];
+  if (controls.length === modelControlNames(editor).length) return;
+  refreshModelControlPicker(editor, controls);
+  validatePathModelEditor(editor, false);
+  updateOrdinalConfirmations();
+}
+
+function unassignModelControls(editor) {
+  const selected = new Set(
+    [...editor.querySelectorAll('.model-controls-selected-list .picker-selected-item[aria-selected="true"]')]
+      .map((row) => row.dataset.item),
+  );
+  if (!selected.size) return;
+  refreshModelControlPicker(editor, modelControlNames(editor).filter((name) => !selected.has(name)));
+  validatePathModelEditor(editor, false);
+  updateOrdinalConfirmations();
+}
+
+function handleSelectedModelControlKeydown(event, editor) {
+  const row = event.target.closest(".model-controls-selected-list .picker-selected-item");
+  if (!row) return;
+  if (event.key === " " || event.key === "Enter") {
+    event.preventDefault();
+    toggleSelectedScaleRow(row);
+  }
+  if (event.key === "Delete" || event.key === "Backspace") {
+    event.preventDefault();
+    row.remove();
+    refreshModelControlPicker(editor);
+    validatePathModelEditor(editor, false);
+    updateOrdinalConfirmations();
+  }
 }
 
 function validateScaleEditor(editor, announce = true) {
@@ -776,13 +1045,24 @@ function addPathModel(initial = {}, options = {}) {
     moderator: initial.moderator || initial.w || "",
     controls: initial.controls || [],
   });
+  editor.querySelector(".assign-controls").addEventListener("click", () => assignModelControls(editor));
+  editor.querySelector(".unassign-controls").addEventListener("click", () => unassignModelControls(editor));
+  editor.querySelector(".model-controls-available").addEventListener("dblclick", () => assignModelControls(editor));
+  editor.querySelector(".model-controls-selected-list").addEventListener("keydown", (event) => handleSelectedModelControlKeydown(event, editor));
   editor.querySelector(".model-analysis").addEventListener("change", () => {
     updateModelVisibility(editor);
     validatePathModelEditor(editor, false);
     updateAnalysisCount();
+    updateOrdinalConfirmations();
   });
   editor.querySelectorAll("input, select").forEach((input) => {
-    input.addEventListener("change", () => validatePathModelEditor(editor, false));
+    input.addEventListener("change", () => {
+      if (input.matches(".model-x, .model-y, .model-mediator, .model-moderator")) {
+        refreshModelControlPicker(editor);
+      }
+      validatePathModelEditor(editor, false);
+      updateOrdinalConfirmations();
+    });
   });
   editor.querySelector(".model-name").addEventListener("input", () => validatePathModelEditor(editor, false));
   editor.querySelector(".remove-model").addEventListener("click", () => {
@@ -817,6 +1097,7 @@ function updateModelVisibility(editor) {
   editor.querySelector(".model-mediator-field").classList.toggle("is-hidden", !needsMediator);
   editor.querySelector(".model-moderator-field").classList.toggle("is-hidden", !needsModerator);
   editor.querySelector(".model-stage-field").classList.toggle("is-hidden", analysis !== "moderated_mediation");
+  refreshModelControlPicker(editor);
 }
 
 function refreshPathModelIndices() {
@@ -830,6 +1111,7 @@ function refreshPathModelIndices() {
   els.modelCount.textContent = `${editors.length} 个模型`;
   els.addModelButton.disabled = editors.length >= maxPathModels;
   updateAnalysisCount();
+  updateOrdinalConfirmations();
 }
 
 function collectPathModel(editor) {
@@ -842,7 +1124,7 @@ function collectPathModel(editor) {
     y: editor.querySelector(".model-y").value,
     mediator: analysis === "mediation" || analysis === "moderated_mediation" ? editor.querySelector(".model-mediator").value || null : null,
     moderator: analysis === "moderation" || analysis === "moderated_mediation" ? editor.querySelector(".model-moderator").value || null : null,
-    controls: selectedOptions(editor.querySelector(".model-controls")),
+    controls: modelControlNames(editor),
     moderated_stage: analysis === "moderated_mediation" ? stage : "first",
   };
 }
@@ -887,8 +1169,187 @@ function collectAnalysisPayload() {
       confidence_interval: els.ciMethod.value,
       robust_se: els.robustSe.value,
       harman_threshold: Number(els.harmanThreshold.value),
+      treat_as_continuous: [...state.treatAsContinuous].sort((left, right) => left.localeCompare(right, "zh-CN")),
     },
   };
+}
+
+async function exportSettings() {
+  if (!state.dataset) {
+    showToast("请先导入数据后再导出配置。", true);
+    return;
+  }
+  const { dataset_id: _datasetId, ...configuration } = collectAnalysisPayload();
+  const settings = {
+    format: settingsFormat,
+    version: settingsVersion,
+    exported_at: new Date().toISOString(),
+    source: {
+      filename: state.dataset.filename,
+      sheet_name: state.dataset.sheetName || null,
+    },
+    configuration,
+  };
+  const filename = `经管论文分析配置-${new Date().toISOString().slice(0, 10)}.json`;
+  const serialized = JSON.stringify(settings, null, 2);
+  const bridge = desktopBridge();
+  if (bridge) {
+    try {
+      const result = await bridge.save_settings(filename, serialized);
+      if (result?.saved) showToast(`当前设置已导出：${result.filename}`);
+      else showToast("已取消导出设置");
+    } catch (error) {
+      showToast(`导出失败：${error.message}`, true);
+    }
+    return;
+  }
+  const blob = new Blob([serialized], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  showToast("当前设置已导出");
+}
+
+async function handleImportSettings(event) {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file) return;
+  if (!state.dataset) {
+    showToast("请先上传用于分析的数据，再导入配置。", true);
+    return;
+  }
+  try {
+    const settings = parseSettingsFile(JSON.parse(await file.text()));
+    await applyImportedSettings(settings);
+  } catch (error) {
+    showStep("variables");
+    showAlert(els.variableError, `导入配置失败：${error.message}`);
+  }
+}
+
+function parseSettingsFile(raw) {
+  if (!isPlainObject(raw)) throw new Error("设置文件不是有效的 JSON 对象。");
+  const wrapped = raw.format === settingsFormat;
+  if (wrapped && raw.version !== settingsVersion) {
+    throw new Error(`不支持的设置文件版本：${String(raw.version || "未知")}。`);
+  }
+  const configuration = wrapped ? raw.configuration : raw;
+  if (!isPlainObject(configuration)) throw new Error("设置文件缺少 configuration。");
+  const scales = configuration.scales ?? [];
+  const models = configuration.models ?? [];
+  if (!Array.isArray(scales) || scales.some((scale) => !isPlainObject(scale))) {
+    throw new Error("量表设置格式不正确。");
+  }
+  if (!Array.isArray(models) || models.some((model) => !isPlainObject(model))) {
+    throw new Error("路径模型设置格式不正确。");
+  }
+  if (scales.length > 50) throw new Error("设置中量表数量超过 50 个。");
+  if (models.length > maxPathModels) throw new Error(`设置中路径数量超过 ${maxPathModels} 条。`);
+  if (!isPlainObject(configuration.analyses) || !isPlainObject(configuration.inference)) {
+    throw new Error("设置文件缺少分析项目或统计推断参数。");
+  }
+  return {
+    source: isPlainObject(raw.source) ? raw.source : {},
+    configuration: {
+      sheet_name: configuration.sheet_name || null,
+      scales,
+      models,
+      roles: isPlainObject(configuration.roles) ? configuration.roles : null,
+      analyses: configuration.analyses,
+      inference: configuration.inference,
+    },
+  };
+}
+
+async function applyImportedSettings(settings) {
+  const configuration = settings.configuration;
+  const requestedSheet = configuration.sheet_name;
+  if (
+    requestedSheet
+    && requestedSheet !== state.dataset.sheetName
+    && state.dataset.sheets.includes(requestedSheet)
+  ) {
+    els.sheetSelect.value = requestedSheet;
+    await handleSheetChange();
+  }
+
+  clearVariableConfiguration();
+  lockStepsAfter("variables");
+  applyAnalysisOptions(configuration.analyses, configuration.inference);
+  const importedTreatAsContinuous = new Set(state.treatAsContinuous);
+  configuration.scales.forEach((scale) => addScale(scale));
+  updateModelOptions();
+  const models = configuration.models.length
+    ? configuration.models
+    : suggestedPathModels({ roles: configuration.roles || {} });
+  models.forEach((model) => addPathModel(model, { focus: false }));
+  state.treatAsContinuous = importedTreatAsContinuous;
+  refreshScaleIndices();
+  refreshPathModelIndices();
+  unlockStep("variables");
+  unlockStep("analysis");
+  showStep("variables");
+
+  const unavailable = collectUnavailableSettingsNames(configuration.scales, models);
+  if (unavailable.length) {
+    showAlert(
+      els.variableError,
+      `已导入配置，但当前数据缺少以下字段：${unavailable.join("、")}。请补充或重新选择变量。`,
+    );
+    return;
+  }
+  const sourceName = settings.source.filename ? `（来源：${settings.source.filename}）` : "";
+  showToast(`已导入 ${configuration.scales.length} 个量表、${models.length} 条路径${sourceName}`);
+}
+
+function applyAnalysisOptions(analyses, inference) {
+  state.treatAsContinuous = new Set(
+    Array.isArray(inference.treat_as_continuous) ? inference.treat_as_continuous : [],
+  );
+  document.querySelectorAll("input[name='analysis']").forEach((input) => {
+    if (typeof analyses[input.value] === "boolean") input.checked = analyses[input.value];
+  });
+  setSelectValue(els.correlationMethod, analyses.correlation);
+  setInputValue(els.harmanThreshold, inference.harman_threshold);
+  setInputValue(els.alphaInput, inference.alpha);
+  setInputValue(els.bootstrapInput, inference.bootstrap_samples);
+  setInputValue(els.seedInput, inference.seed);
+  setSelectValue(els.ciMethod, inference.confidence_interval);
+  setSelectValue(els.robustSe, inference.robust_se);
+}
+
+function setSelectValue(select, value) {
+  if (value === undefined || value === null) return;
+  if ([...select.options].some((option) => option.value === String(value))) select.value = String(value);
+}
+
+function setInputValue(input, value) {
+  if (value !== undefined && value !== null && value !== "") input.value = String(value);
+}
+
+function collectUnavailableSettingsNames(scales, models) {
+  const fields = new Set(questionColumnNames());
+  const scaleNames = new Set(scales.map((scale) => String(scale.name || "")).filter(Boolean));
+  const unavailable = new Set();
+  scales.forEach((scale) => {
+    (Array.isArray(scale.items) ? scale.items : []).forEach((item) => {
+      if (item && !fields.has(item)) unavailable.add(String(item));
+    });
+  });
+  const availableVariables = new Set([...fields, ...scaleNames]);
+  models.forEach((model) => {
+    [model.x, model.y, model.mediator, model.moderator, ...(Array.isArray(model.controls) ? model.controls : [])]
+      .filter(Boolean)
+      .forEach((name) => {
+        if (!availableVariables.has(name)) unavailable.add(String(name));
+      });
+  });
+  return [...unavailable].sort((left, right) => left.localeCompare(right, "zh-CN"));
 }
 
 function validateAnalysis(payload) {
@@ -901,6 +1362,11 @@ function validateAnalysis(payload) {
   if (!modelsValid) return "请完成所有路径模型的变量配置。";
   const modelNames = payload.models.map((model) => model.name);
   if (new Set(modelNames).size !== modelNames.length) return "路径模型名称不能重复。";
+  const unconfirmedOrdinalPredictors = ambiguousOrdinalPredictors(payload.models)
+    .filter((name) => !payload.inference.treat_as_continuous.includes(name));
+  if (unconfirmedOrdinalPredictors.length) {
+    return `请确认以下 3/4 取值变量是否可按有序连续变量处理，或先转为哑变量：${unconfirmedOrdinalPredictors.join("、")}。`;
+  }
   if (!(payload.inference.alpha > 0 && payload.inference.alpha < 0.5)) return "显著性水平 α 必须在 0 与 0.5 之间。";
   if (!Number.isInteger(payload.inference.bootstrap_samples) || payload.inference.bootstrap_samples < 200 || payload.inference.bootstrap_samples > 20000) return "Bootstrap 次数应为 200 至 20000 的整数。";
   return "";
@@ -1182,12 +1648,67 @@ function buildMetricSection(title, entries) {
   return section;
 }
 
+function isCorrelationMatrix(value) {
+  return isPlainObject(value)
+    && value.display === "correlation_lower_triangle"
+    && Array.isArray(value.variables)
+    && Array.isArray(value.rows);
+}
+
+function buildCorrelationMatrix(value) {
+  const variables = value.variables.map(String);
+  const wrapper = document.createElement("div");
+  wrapper.className = "result-table correlation-matrix";
+  const table = document.createElement("table");
+  const thead = document.createElement("thead");
+  const headerRow = document.createElement("tr");
+  const corner = document.createElement("th");
+  corner.scope = "col";
+  corner.textContent = "变量";
+  headerRow.append(corner);
+  variables.forEach((variable) => {
+    const th = document.createElement("th");
+    th.scope = "col";
+    th.textContent = variable;
+    headerRow.append(th);
+  });
+  thead.append(headerRow);
+  const tbody = document.createElement("tbody");
+  variables.forEach((variable, rowIndex) => {
+    const tr = document.createElement("tr");
+    const rowHeader = document.createElement("th");
+    rowHeader.scope = "row";
+    rowHeader.textContent = variable;
+    tr.append(rowHeader);
+    const values = Array.isArray(value.rows[rowIndex]?.values) ? value.rows[rowIndex].values : [];
+    variables.forEach((_column, columnIndex) => {
+      const td = document.createElement("td");
+      const cell = values[columnIndex] || "";
+      td.textContent = cell;
+      if (!cell) td.className = "correlation-empty";
+      tr.append(td);
+    });
+    tbody.append(tr);
+  });
+  table.append(thead, tbody);
+  const note = document.createElement("p");
+  note.className = "correlation-note";
+  const method = value.method ? String(value.method).toUpperCase() : "相关";
+  note.textContent = `${method}；* p < .05，** p < .01，*** p < .001${value.truncated ? `；当前显示前 ${variables.length}/${value.total_variables} 个变量` : ""}`;
+  wrapper.append(table, note);
+  return wrapper;
+}
+
 function buildResultSection(title, value) {
   const section = document.createElement("section");
   section.className = "result-section";
   const heading = document.createElement("h3");
   heading.textContent = title;
   section.append(heading);
+  if (isCorrelationMatrix(value)) {
+    section.append(buildCorrelationMatrix(value));
+    return section;
+  }
   if (Array.isArray(value)) {
     if (value.length && value.every(isPlainObject)) {
       section.append(buildObjectTable(value));
@@ -1265,8 +1786,13 @@ function renderArtifacts(artifacts) {
   artifacts.forEach((artifact) => {
     const link = document.createElement("a");
     link.className = "artifact-item";
-    link.href = artifact.url;
-    if (artifact.type === "HTML") {
+    link.href = artifact.native ? "#" : artifact.url;
+    if (artifact.native) {
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        void saveNativeArtifact(artifact);
+      });
+    } else if (artifact.type === "HTML") {
       link.target = "_blank";
       link.rel = "noopener";
     } else {
@@ -1288,6 +1814,21 @@ function renderArtifacts(artifacts) {
     link.append(icon, copy, symbol);
     els.artifactList.append(link);
   });
+}
+
+async function saveNativeArtifact(artifact) {
+  const bridge = desktopBridge();
+  if (!bridge || !artifact.runId || !artifact.artifactName) {
+    showToast("桌面版文件保存服务不可用。", true);
+    return;
+  }
+  try {
+    const result = await bridge.save_artifact(artifact.runId, artifact.artifactName);
+    if (result?.saved) showToast(`已保存 ${result.filename}`);
+    else showToast("已取消保存文件");
+  } catch (error) {
+    showToast(`保存失败：${error.message}`, true);
+  }
 }
 
 function selectResultTab(name) {
@@ -1360,6 +1901,7 @@ function clearVariableConfiguration() {
   forgetSavedJob();
   state.scaleSequence = 0;
   state.modelSequence = 0;
+  state.treatAsContinuous = new Set();
   els.scaleList.replaceChildren();
   els.pathModelList.replaceChildren();
   els.resultSummary.replaceChildren();
@@ -1369,6 +1911,7 @@ function clearVariableConfiguration() {
   els.rerunButton.classList.add("is-hidden");
   refreshScaleIndices();
   refreshPathModelIndices();
+  updateOrdinalConfirmations();
   [els.variableError, els.analysisError, els.jobError].forEach(hideAlert);
 }
 
@@ -1389,10 +1932,12 @@ function resetApplication() {
   state.seenLogs.clear();
   state.scaleSequence = 0;
   state.modelSequence = 0;
+  state.treatAsContinuous = new Set();
   els.fileInput.value = "";
   els.fileLabel.textContent = "选择数据文件";
   els.fileMeta.textContent = "CSV 或 XLSX，最大 100 MB";
   els.uploadButton.disabled = true;
+  els.settingsFileInput.value = "";
   els.uploadState.textContent = "CSV / XLSX";
   els.datasetContext.textContent = "新分析";
   els.dataReview.classList.add("is-hidden");
@@ -1406,22 +1951,41 @@ function resetApplication() {
     button.classList.remove("is-complete");
   });
   showStep("upload");
+  updateSettingsButtons();
   showToast("已重置分析");
 }
 
 function rememberJob() {
   if (!state.jobId && !state.runId) return;
-  sessionStorage.setItem(savedJobKey, JSON.stringify({ jobId: state.jobId, runId: state.runId }));
+  savedJobMemory = JSON.stringify({ jobId: state.jobId, runId: state.runId });
+  try {
+    sessionStorage.setItem(savedJobKey, savedJobMemory);
+  } catch (_error) {
+    // WKWebView pages created from in-memory HTML have an opaque origin.
+  }
 }
 
 function forgetSavedJob() {
-  sessionStorage.removeItem(savedJobKey);
+  savedJobMemory = null;
+  try {
+    sessionStorage.removeItem(savedJobKey);
+  } catch (_error) {
+    // The in-memory fallback is enough for the lifetime of a desktop window.
+  }
+}
+
+function readSavedJob() {
+  try {
+    return sessionStorage.getItem(savedJobKey) ?? savedJobMemory;
+  } catch (_error) {
+    return savedJobMemory;
+  }
 }
 
 async function resumeSavedJob() {
   let saved;
   try {
-    saved = JSON.parse(sessionStorage.getItem(savedJobKey) || "null");
+    saved = JSON.parse(readSavedJob() || "null");
   } catch (_error) {
     forgetSavedJob();
     return;
@@ -1538,6 +2102,16 @@ function humanizeKey(key) {
     mediation_indirect: "中介间接效应", moderation_interaction: "调节交互项",
     moderated_mediation_index: "被调节的中介指数", ci_low: "置信区间下限", ci_high: "置信区间上限",
     path_models: "回归路径模型", model_id: "模型编号", model_name: "模型名称", model_type: "模型类型",
+    in_app_preview: "结果预览", variable_1: "变量 1", variable_2: "变量 2",
+    missing: "缺失值", minimum: "最小值", maximum: "最大值", items: "题项数",
+    alpha: "Cronbach's α", composite_reliability: "组合信度 CR", ave: "平均方差提取 AVE",
+    chi_square: "卡方", df: "自由度", cfi: "CFI", tli: "TLI", rmsea: "RMSEA", srmr: "SRMR",
+    first_component_percent: "第一因子解释率", threshold_percent: "判定阈值", above_threshold: "达到阈值",
+    components_eigenvalue_gt_1: "特征值大于 1 的成分数", trait_only_fit: "特质模型拟合",
+    trait_method_fit: "方法因子模型拟合", comparison: "模型比较", model: "模型", b: "非标准化系数 B",
+    beta: "标准化系数 β", t: "t 值", f: "F 值", f_p: "F 检验 p 值", adjusted_r_squared: "调整 R²",
+    delta_r_squared: "ΔR²", effect: "效应", significant: "显著", moderator_value: "调节变量取值",
+    level: "水平", w_value: "调节变量取值", slope: "简单斜率", johnson_neyan_boundaries: "Johnson-Neyman 临界值",
   };
   const normalized = String(key).toLowerCase();
   return labels[normalized] || String(key).replaceAll("_", " ");

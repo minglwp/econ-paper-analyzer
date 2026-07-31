@@ -177,6 +177,17 @@ class InferenceConfig(BaseModel):
     confidence_interval: Literal["percentile", "bca"] = "bca"
     robust_se: Literal["HC3", "classical"] = "HC3"
     harman_threshold: float = Field(default=40.0, ge=0, le=100)
+    treat_as_continuous: list[str] = Field(default_factory=list, max_length=50)
+
+    @field_validator("treat_as_continuous")
+    @classmethod
+    def valid_confirmed_predictors(cls, value: list[str]) -> list[str]:
+        names = [name.strip() for name in value]
+        if any(not name or len(name) > 128 for name in names):
+            raise ValueError("人工确认变量名必须为 1 至 128 个字符")
+        if len(set(names)) != len(names):
+            raise ValueError("人工确认变量不能重复")
+        return names
 
 
 class AnalysisRequest(BaseModel):
@@ -253,6 +264,18 @@ class AnalysisRequest(BaseModel):
             if self.models
             else ([self.roles] if self.roles else [])
         )
+        confirmed_predictors = set(self.inference.treat_as_continuous)
+        eligible_predictors = {
+            variable
+            for roles in active_roles
+            for variable in (roles.x, *roles.controls)
+        }
+        unsupported_confirmations = sorted(confirmed_predictors - eligible_predictors)
+        if unsupported_confirmations:
+            raise ValueError(
+                "人工确认仅适用于已配置路径的 X 或控制变量: "
+                + ", ".join(unsupported_confirmations)
+            )
         configured_names: list[str | None] = [*names, *configured_items]
         for roles in active_roles:
             configured_names.extend(

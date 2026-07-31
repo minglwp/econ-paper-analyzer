@@ -158,6 +158,7 @@ def records_for_json(frame: pd.DataFrame, limit: int | None = None) -> list[dict
 def inspect_dataframe(frame: pd.DataFrame) -> dict[str, Any]:
     missing = frame.isna().sum()
     numeric = frame.apply(lambda series: pd.to_numeric(series, errors="coerce").notna().mean())
+    unique_values = frame.nunique(dropna=True)
     return {
         "rows": int(len(frame)),
         "columns_count": int(frame.shape[1]),
@@ -175,6 +176,9 @@ def inspect_dataframe(frame: pd.DataFrame) -> dict[str, Any]:
             },
             "numeric_share": {
                 str(column): round(float(share), 4) for column, share in numeric.items()
+            },
+            "unique_values": {
+                str(column): int(count) for column, count in unique_values.items()
             },
         },
     }

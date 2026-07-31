@@ -80,6 +80,45 @@ def test_descriptives_and_pairwise_correlations(demo_frame, demo_request):
     assert target["ci_low"] < target["r"] < target["ci_high"]
 
 
+def test_three_level_predictor_requires_confirmation_before_ols():
+    rows = 60
+    x = np.tile([1.0, 2.0, 3.0], rows // 3)
+    frame = pd.DataFrame(
+        {
+            "x": x,
+            "y": 1.5 + 0.6 * x + np.random.default_rng(7).normal(0, 0.2, rows),
+        }
+    )
+    request_payload = {
+        "dataset_id": "0" * 32,
+        "roles": {"x": "x", "y": "y"},
+        "analyses": {
+            "cfa": False,
+            "harman": False,
+            "ulmc": False,
+            "descriptives": False,
+            "regression": True,
+            "mediation": False,
+            "moderation": False,
+            "moderated_mediation": False,
+        },
+    }
+    unconfirmed = AnalysisRequest.model_validate(request_payload)
+
+    with pytest.raises(ValueError, match="人工确认"):
+        run_regressions(frame, unconfirmed)
+
+    confirmed = AnalysisRequest.model_validate(
+        {
+            **request_payload,
+            "inference": {"treat_as_continuous": ["x"]},
+        }
+    )
+    result = run_regressions(frame, confirmed)
+
+    assert result["models"][0]["outcome"] == "y"
+
+
 def test_bootstrap_effects_and_moderation_plot(tmp_path: Path, demo_frame, demo_request):
     frame, _, _ = prepare_analysis_data(demo_frame, demo_request)
     mediation = run_mediation(frame, demo_request)

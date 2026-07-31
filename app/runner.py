@@ -27,6 +27,259 @@ from .sem_analysis import run_cfa, run_harman, run_ulmc
 ProgressCallback = Callable[[int, str], None]
 
 
+_PREVIEW_ROW_LIMIT = 10
+_PREVIEW_CORRELATION_VARIABLE_LIMIT = 24
+
+
+def _preview_rows(
+    rows: Any,
+    fields: tuple[str, ...] | None = None,
+    limit: int = _PREVIEW_ROW_LIMIT,
+) -> list[dict[str, Any]]:
+    """Keep the job response readable without duplicating the full results file."""
+    if not isinstance(rows, list):
+        return []
+    preview: list[dict[str, Any]] = []
+    for row in rows[:limit]:
+        if not isinstance(row, dict):
+            continue
+        if fields is None:
+            preview.append(dict(row))
+        else:
+            preview.append({field: row.get(field) for field in fields if field in row})
+    return preview
+
+
+def _ulmc_fit_comparison_rows(ulmc: dict[str, Any]) -> list[dict[str, Any]]:
+    trait_fit = ulmc.get("trait_only_fit", {})
+    method_fit = ulmc.get("trait_method_fit", {})
+    comparison = ulmc.get("comparison", {})
+    metrics = (
+        ("n", "样本量 N", None),
+        ("chi_square", "χ²", "delta_chi_square"),
+        ("df", "df", "delta_df"),
+        ("cfi", "CFI", "delta_cfi"),
+        ("tli", "TLI", "delta_tli"),
+        ("rmsea", "RMSEA", "delta_rmsea"),
+        ("srmr", "SRMR", "delta_srmr"),
+        ("aic", "AIC", None),
+        ("bic", "BIC", None),
+    )
+    return [
+        {
+            "指标": label,
+            "特质模型拟合结果": trait_fit.get(metric),
+            "方法因子模型拟合": method_fit.get(metric),
+            "对比结果": comparison.get(comparison_metric)
+            if comparison_metric
+            else None,
+        }
+        for metric, label, comparison_metric in metrics
+    ]
+
+
+def _correlation_marker(p_value: Any) -> str:
+    if not isinstance(p_value, (int, float)):
+        return ""
+    if p_value < 0.001:
+        return "***"
+    if p_value < 0.01:
+        return "**"
+    if p_value < 0.05:
+        return "*"
+    return ""
+
+
+def _format_correlation(row: dict[str, Any] | None) -> str:
+    if not row or not isinstance(row.get("r"), (int, float)):
+        return "—"
+    return f"{float(row['r']):.3f}{_correlation_marker(row.get('p'))}"
+
+
+def _correlation_lower_triangle(correlations: dict[str, Any]) -> dict[str, Any]:
+    source_rows = [
+        row for row in correlations.get("rows", []) if isinstance(row, dict)
+    ]
+    variables: list[str] = []
+    pairs: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in source_rows:
+        left = row.get("variable_1")
+        right = row.get("variable_2")
+        if not isinstance(left, str) or not isinstance(right, str):
+            continue
+        if left not in variables:
+            variables.append(left)
+        if right not in variables:
+            variables.append(right)
+        pairs[(left, right)] = row
+
+    displayed_variables = variables[:_PREVIEW_CORRELATION_VARIABLE_LIMIT]
+    rows = []
+    for row_index, row_variable in enumerate(displayed_variables):
+        values = []
+        for column_index, column_variable in enumerate(displayed_variables):
+            if column_index >= row_index:
+                values.append("")
+            else:
+                values.append(_format_correlation(pairs.get((column_variable, row_variable))))
+        rows.append({"variable": row_variable, "values": values})
+    return {
+        "display": "correlation_lower_triangle",
+        "method": correlations.get("method"),
+        "variables": displayed_variables,
+        "rows": rows,
+        "truncated": len(variables) > len(displayed_variables),
+        "total_variables": len(variables),
+    }
+
+
+def _preview_model_summaries(models: Any) -> list[dict[str, Any]]:
+    if isinstance(models, dict):
+        iterable = [(name, model) for name, model in models.items()]
+    elif isinstance(models, list):
+        iterable = [
+            (str(model.get("name") or f"模型 {index}"), model)
+            for index, model in enumerate(models, start=1)
+            if isinstance(model, dict)
+        ]
+    else:
+        return []
+    fields = (
+        "outcome",
+        "n",
+        "r_squared",
+        "adjusted_r_squared",
+        "delta_r_squared",
+        "f",
+        "f_p",
+    )
+    return [
+        {"model": name, **{field: model.get(field) for field in fields}}
+        for name, model in iterable[:_PREVIEW_ROW_LIMIT]
+    ]
+
+
+def _preview_coefficients(models: Any) -> list[dict[str, Any]]:
+    if isinstance(models, dict):
+        iterable = [(name, model) for name, model in models.items()]
+    elif isinstance(models, list):
+        iterable = [
+            (str(model.get("name") or f"模型 {index}"), model)
+            for index, model in enumerate(models, start=1)
+            if isinstance(model, dict)
+        ]
+    else:
+        return []
+    rows: list[dict[str, Any]] = []
+    for name, model in iterable:
+        for coefficient in model.get("coefficients", []):
+            if not isinstance(coefficient, dict):
+                continue
+            rows.append(
+                {
+                    "model": name,
+                    **{
+                        field: coefficient.get(field)
+                        for field in ("term", "b", "beta", "se", "t", "p", "ci_low", "ci_high")
+                    },
+                }
+            )
+            if len(rows) >= _PREVIEW_ROW_LIMIT:
+                return rows
+    return rows
+
+
+def _analysis_preview(result: dict[str, Any], analysis: str | None = None) -> dict[str, Any]:
+    """Create a compact result card for one path or a legacy analysis module."""
+    preview: dict[str, Any] = {}
+    models = result.get("models")
+    model_summaries = _preview_model_summaries(models)
+    coefficients = _preview_coefficients(models)
+    if model_summaries:
+        preview["模型摘要"] = model_summaries
+    if coefficients:
+        preview["关键回归系数"] = coefficients
+    if result.get("interaction"):
+        preview["交互项"] = result["interaction"]
+    if result.get("effects"):
+        preview["效应检验"] = _preview_rows(
+            result["effects"],
+            ("effect", "estimate", "se", "ci_low", "ci_high", "significant", "moderator_value"),
+        )
+    if result.get("simple_slopes"):
+        preview["简单斜率"] = _preview_rows(
+            result["simple_slopes"],
+            ("level", "w_value", "slope", "se", "t", "p", "ci_low", "ci_high"),
+        )
+    if result.get("johnson_neyman_boundaries"):
+        preview["Johnson-Neyman 临界值"] = result["johnson_neyman_boundaries"][:_PREVIEW_ROW_LIMIT]
+    if result.get("template"):
+        preview["模型模板"] = result["template"]
+    if result.get("interpretation"):
+        preview["结论"] = result["interpretation"]
+    if result.get("causal_note"):
+        preview["说明"] = result["causal_note"]
+    if result.get("note"):
+        preview["说明"] = result["note"]
+    if analysis and not preview:
+        preview["状态"] = "未产生可预览统计量"
+    return preview
+
+
+def _in_app_preview(results: dict[str, Any]) -> dict[str, Any]:
+    """Return selected findings that can be displayed before downloading files."""
+    preview: dict[str, Any] = {}
+    cfa = results.get("cfa", {})
+    if cfa.get("status") == "ok":
+        preview["验证性因子分析（CFA）"] = {
+            "模型拟合": {
+                field: cfa.get("fit", {}).get(field)
+                for field in ("chi_square", "df", "cfi", "tli", "rmsea", "srmr", "aic", "bic")
+                if field in cfa.get("fit", {})
+            },
+            "信度与收敛效度": _preview_rows(
+                cfa.get("reliability"),
+                ("construct", "n", "items", "alpha", "composite_reliability", "ave"),
+            ),
+        }
+    harman = results.get("harman", {})
+    if harman.get("status") == "ok":
+        preview["共同方法偏差：Harman"] = {
+            field: harman.get(field)
+            for field in (
+                "n",
+                "items",
+                "first_component_percent",
+                "threshold_percent",
+                "above_threshold",
+                "components_eigenvalue_gt_1",
+                "interpretation",
+            )
+        }
+    ulmc = results.get("ulmc", {})
+    if ulmc.get("status") == "ok":
+        preview["共同方法偏差：ULMC"] = _ulmc_fit_comparison_rows(ulmc)
+    descriptives = results.get("descriptives", {})
+    if descriptives.get("status") == "ok":
+        preview["描述性统计"] = _preview_rows(
+            descriptives.get("rows"),
+            ("variable", "n", "missing", "mean", "sd", "minimum", "maximum"),
+        )
+    correlations = results.get("correlations", {})
+    if correlations.get("status") == "ok":
+        preview["相关分析"] = _correlation_lower_triangle(correlations)
+    for key, label in (
+        ("regression", "回归分析"),
+        ("mediation", "中介效应"),
+        ("moderation", "调节效应"),
+        ("moderated_mediation", "被调节的中介效应"),
+    ):
+        module = results.get(key, {})
+        if module.get("status") == "ok":
+            preview[label] = _analysis_preview(module, key)
+    return preview
+
+
 def _request_for_path_model(
     request: AnalysisRequest, model: PathModelConfig
 ) -> AnalysisRequest:
@@ -89,6 +342,9 @@ def summarize_results(results: dict[str, Any]) -> dict[str, Any]:
             for row in results["moderated_mediation"]["effects"]
             if row["effect"] == "index_moderated_mediation"
         )
+    preview = _in_app_preview(results)
+    if preview:
+        summary["in_app_preview"] = preview
     if "path_models" in results:
         path_models = results["path_models"]
         summary["path_models"] = [
@@ -97,6 +353,13 @@ def summarize_results(results: dict[str, Any]) -> dict[str, Any]:
                 "name": model["name"],
                 "analysis": model["analysis"],
                 "status": model["status"],
+                "config": model.get("config", {}),
+                "artifacts": model.get("artifacts", []),
+                **(
+                    {"result": _analysis_preview(model.get("result", {}), model["analysis"])}
+                    if model.get("status") == "ok"
+                    else {}
+                ),
                 **({"error": model["error"]} if model.get("error") else {}),
             }
             for model in path_models

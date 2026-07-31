@@ -1,8 +1,10 @@
 # Security and data privacy
 
-This application is designed for local use and binds only to `127.0.0.1`.
-Do not expose it directly to a LAN or the public internet. Authentication,
-CSRF protection, and multi-user isolation are outside the current scope.
+The packaged macOS application does not start an HTTP listener: its embedded
+window calls the analysis process through a local application bridge. The
+source-development server binds only to `127.0.0.1`; do not expose it directly
+to a LAN or the public internet. Authentication, CSRF protection, and
+multi-user isolation are outside the current scope.
 
 Uploaded source files are stored in a private local cache or temporary
 directory. Generated reports, configuration, logs, and machine-readable

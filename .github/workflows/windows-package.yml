@@ -23,14 +23,19 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements-build.txt
-      - name: Build portable Windows package
+      - name: Install Inno Setup
         shell: pwsh
-        run: ./scripts/build_windows.ps1
-      - name: Upload Windows package
+        run: choco install innosetup --no-progress --yes
+      - name: Build Windows packages
+        shell: pwsh
+        run: ./scripts/build_windows.ps1 -CreateInstaller
+      - name: Upload Windows packages
         uses: actions/upload-artifact@v4
         with:
           name: econ-paper-analyzer-windows-x64
-          path: dist/releases/v*/econ-paper-analyzer-windows-x64-v*.zip
+          path: |
+            dist/releases/v*/econ-paper-analyzer-windows-x64-v*.zip
+            dist/releases/v*/econ-paper-analyzer-windows-x64-v*-setup.exe
           if-no-files-found: error
           retention-days: 30
       - name: Upload checksum
@@ -48,12 +53,13 @@ jobs:
         run: |
           $Tag = $env:GITHUB_REF_NAME
           $Package = Get-ChildItem -Path dist/releases -Filter "econ-paper-analyzer-windows-x64-v*.zip" -Recurse | Select-Object -First 1
+          $Installer = Get-ChildItem -Path dist/releases -Filter "econ-paper-analyzer-windows-x64-v*-setup.exe" -Recurse | Select-Object -First 1
           $Checksum = Get-ChildItem -Path dist/releases -Filter "econ-paper-analyzer-windows-x64-v*.sha256" -Recurse | Select-Object -First 1
-          if ($null -eq $Package -or $null -eq $Checksum) {
+          if ($null -eq $Package -or $null -eq $Installer -or $null -eq $Checksum) {
             throw "Windows release assets were not created."
           }
           gh release view $Tag --repo $env:GITHUB_REPOSITORY 2>$null
           if ($LASTEXITCODE -ne 0) {
             gh release create $Tag --repo $env:GITHUB_REPOSITORY --title "Econ Paper Analyzer $Tag" --generate-notes
           }
-          gh release upload $Tag $Package.FullName $Checksum.FullName --repo $env:GITHUB_REPOSITORY --clobber
+          gh release upload $Tag $Package.FullName $Installer.FullName $Checksum.FullName --repo $env:GITHUB_REPOSITORY --clobber

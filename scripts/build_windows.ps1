@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$Python = $env:EPA_BUILD_PYTHON
+    [string]$Python = $env:EPA_BUILD_PYTHON,
+    [switch]$CreateInstaller
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,9 +48,12 @@ $IconsetPath = Join-Path $BuildRoot "AppIcon.iconset"
 $PngPath = Join-Path $ProjectRoot "assets\app-icon.png"
 $ApplicationPath = Join-Path $PackageDist "econ-paper-analyzer"
 $ZipName = "econ-paper-analyzer-windows-x64-v$Version.zip"
+$InstallerName = "econ-paper-analyzer-windows-x64-v$Version-setup.exe"
 $ChecksumName = "econ-paper-analyzer-windows-x64-v$Version.sha256"
 $ZipPath = Join-Path $ReleaseStage $ZipName
+$InstallerPath = Join-Path $ReleaseStage $InstallerName
 $ChecksumPath = Join-Path $ReleaseStage $ChecksumName
+$InstallerScript = Join-Path $ProjectRoot "scripts\EconPaperAnalyzer.iss"
 
 New-Item -ItemType Directory -Force -Path $BuildRoot, $ReleaseParent, $PackageDist, $ReleaseStage | Out-Null
 
@@ -79,16 +83,45 @@ try {
         throw "The release ZIP does not contain the expected executable."
     }
 
-    $Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ZipPath).Hash.ToLowerInvariant()
-    "$Hash  $ZipName" | Set-Content -LiteralPath $ChecksumPath -Encoding ascii
-    $ExpectedHash = ((Get-Content -LiteralPath $ChecksumPath) -split '\s+' | Where-Object { $_ } | Select-Object -First 1)
-    if ($ExpectedHash -ne $Hash) {
-        throw "SHA-256 verification failed."
+    $ReleaseArtifacts = @($ZipPath)
+    if ($CreateInstaller) {
+        if (-not (Test-Path -LiteralPath $InstallerScript)) {
+            throw "Inno Setup script not found: $InstallerScript"
+        }
+        $InnoSetupCompiler = Get-Command ISCC.exe -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty Path
+        if ([string]::IsNullOrWhiteSpace($InnoSetupCompiler)) {
+            $InnoSetupCompiler = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
+        }
+        if (-not (Test-Path -LiteralPath $InnoSetupCompiler)) {
+            throw "Inno Setup 6 was not found. Install it or run without -CreateInstaller."
+        }
+
+        & $InnoSetupCompiler "/DAppVersion=$Version" "/DSourceDir=$ApplicationPath" "/DOutputDir=$ReleaseStage" "/DSetupIcon=$IconPath" $InstallerScript
+        if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed." }
+        if (-not (Test-Path -LiteralPath $InstallerPath)) {
+            throw "Expected Windows installer was not created: $InstallerPath"
+        }
+        $ReleaseArtifacts += $InstallerPath
+    }
+
+    $ChecksumLines = foreach ($Artifact in $ReleaseArtifacts) {
+        $Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Artifact).Hash.ToLowerInvariant()
+        "$Hash  $(Split-Path -Leaf $Artifact)"
+    }
+    $ChecksumLines | Set-Content -LiteralPath $ChecksumPath -Encoding ascii
+    foreach ($Line in Get-Content -LiteralPath $ChecksumPath) {
+        if ($Line -notmatch '^[0-9a-f]{64}\s{2}.+$') {
+            throw "SHA-256 verification file is malformed."
+        }
     }
 
     Move-Item -LiteralPath $ReleaseStage -Destination $ReleaseRoot
     $ReleaseStage = $null
     Write-Host "Release: $(Join-Path $ReleaseRoot $ZipName)"
+    if ($CreateInstaller) {
+        Write-Host "Installer: $(Join-Path $ReleaseRoot $InstallerName)"
+    }
     Write-Host "Checksum: $(Join-Path $ReleaseRoot $ChecksumName)"
 }
 finally {

@@ -28,6 +28,15 @@ Apple Silicon（arm64）发行包提供 `.dmg` 与 `.zip` 两种格式，支持 
 ~/Library/Application Support/EconPaperAnalyzer/runs
 ```
 
+## Windows 桌面软件
+
+Windows x64 发行包同时提供两种格式：
+
+- `econ-paper-analyzer-windows-x64-v<版本号>.zip`：免安装版，解压后运行 `econ-paper-analyzer.exe`；
+- `econ-paper-analyzer-windows-x64-v<版本号>-setup.exe`：安装版，安装到当前用户的 Programs 目录，创建开始菜单项，可选桌面快捷方式，并在系统设置中提供卸载入口。
+
+当前 Windows 包尚未使用代码签名。首次运行或安装时，Windows SmartScreen 可能显示来源提示；正式对外分发前应使用代码签名证书签名安装程序与主程序。
+
 ## 源码快速启动
 
 macOS 可双击 `run.command`。首次运行会建立项目自己的 `.venv` 并安装依赖，然后自动打开浏览器。默认从以下地址开始；如果端口已占用会自动顺延：
@@ -112,15 +121,16 @@ PYTHONPATH=. .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 87
 
 ## 构建 Windows 发行包
 
-Windows 10/11 x64 构建机需要 x64 Python 3.11-3.13、PowerShell 及 Microsoft Edge WebView2 Runtime（Windows 11 通常已内置）：
+Windows 10/11 x64 构建机需要 x64 Python 3.11-3.13、PowerShell、Inno Setup 6 及 Microsoft Edge WebView2 Runtime（Windows 11 通常已内置）：
 
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python -m pip install -r requirements-build.txt
-.\scripts\build_windows.ps1
+choco install innosetup --no-progress --yes
+.\scripts\build_windows.ps1 -CreateInstaller
 ```
 
-该脚本生成免安装的 `econ-paper-analyzer-windows-x64-v<版本号>.zip` 与 `SHA256SUMS.txt`，位于 `dist/releases/v<版本号>/`。解压后运行 `econ-paper-analyzer\econ-paper-analyzer.exe`。提交带有 `v*` 标签的 GitHub 仓库，或在 Actions 页面手动运行 `Windows Package`，会在原生 Windows runner 生成相同 ZIP 并作为构建产物上传。
+该脚本生成免安装 ZIP、安装版 `-setup.exe` 和涵盖两者的 `.sha256` 文件，位于 `dist/releases/v<版本号>/`。提交带有 `v*` 标签的 GitHub 仓库时，GitHub Actions 会在原生 Windows runner 自动生成并上传两种格式到对应 Release；手动运行 `Windows Package` 会生成可下载的构建产物。
 
 ## 许可
 

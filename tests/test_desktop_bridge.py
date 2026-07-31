@@ -234,3 +234,13 @@ def test_desktop_html_inlines_static_resources_and_bootstrap() -> None:
     assert 'window.addEventListener("error"' in html
     assert 'window.addEventListener("unhandledrejection"' in html
     assert 'window.addEventListener("pywebviewready"' in html
+
+
+def test_desktop_removes_windows_download_zone_identifier(tmp_path: Path) -> None:
+    runtime_dll = tmp_path / "Python.Runtime.dll"
+    runtime_dll.write_bytes(b"runtime")
+    zone_identifier = tmp_path / "Python.Runtime.dll:Zone.Identifier"
+    zone_identifier.write_text("[ZoneTransfer]\nZoneId=3\n", encoding="utf-8")
+
+    assert desktop._remove_windows_zone_identifier(runtime_dll) is True
+    assert not zone_identifier.exists()

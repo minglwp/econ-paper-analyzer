@@ -12,6 +12,8 @@ def test_desktop_launcher_has_windows_runtime_and_lock_support() -> None:
     assert 'LOCALAPPDATA' in source
     assert "msvcrt.locking" in source
     assert "MessageBoxW" in source
+    assert "Python.Runtime.dll" in source
+    assert "Zone.Identifier" in source
 
 
 def test_pyinstaller_spec_selects_platform_specific_gui_backends() -> None:

@@ -149,22 +149,53 @@ def _acquire_instance_lock(runtime: Path) -> tuple[IO[str], bool]:
     return lock_file, True
 
 
-def _show_startup_error(log_path: Path) -> None:
+def _remove_windows_zone_identifier(path: Path) -> bool:
+    """Remove Windows' download-zone marker from a bundled runtime file."""
+    zone_identifier = Path(f"{path}:Zone.Identifier")
+    if not zone_identifier.exists():
+        return False
+    try:
+        zone_identifier.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def _unblock_windows_pythonnet_runtime() -> bool:
+    if os.name != "nt":
+        return False
+
+    application_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    runtime_dll = application_root / "pythonnet" / "runtime" / "Python.Runtime.dll"
+    if not runtime_dll.is_file():
+        return False
+    return _remove_windows_zone_identifier(runtime_dll)
+
+
+def _show_startup_error(log_path: Path, error: BaseException | None = None) -> None:
+    message = f"EconPaperAnalyzer could not start.\n\nSee the log file:\n{log_path}"
+    if error and "Python.Runtime.Loader.Initialize" in str(error):
+        message = (
+            "EconPaperAnalyzer 无法加载 Windows 运行组件。\n\n"
+            "请优先使用 GitHub Release 中的 -setup.exe 安装版，而不是从微信或 ZIP 解压后直接运行。"
+            "若仍使用 ZIP，请在 ZIP 文件属性中选择“解除锁定”，再重新解压。\n\n"
+            f"日志文件：\n{log_path}"
+        )
     try:
         if sys.platform == "darwin":
             script = (
                 "on run argv\n"
                 'display alert "EconPaperAnalyzer could not start" '
-                'message ("See the log file: " & item 1 of argv) as critical\n'
+                'message (item 1 of argv) as critical\n'
                 "end run"
             )
-            subprocess.run(["osascript", "-e", script, str(log_path)], check=False, timeout=10)
+            subprocess.run(["osascript", "-e", script, message], check=False, timeout=10)
         elif os.name == "nt":
             import ctypes
 
             ctypes.windll.user32.MessageBoxW(
                 None,
-                f"EconPaperAnalyzer could not start.\n\nSee the log file:\n{log_path}",
+                message,
                 "EconPaperAnalyzer",
                 0x10,
             )
@@ -212,6 +243,8 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
+    if _unblock_windows_pythonnet_runtime():
+        logging.info("Removed the Windows download-zone marker from Python.Runtime.dll")
     lock_file, owns_lock = _acquire_instance_lock(runtime)
     if not owns_lock:
         logging.info("An application window is already open")
@@ -246,9 +279,9 @@ def main() -> int:
             storage_path=str(cache / "webview"),
         )
         return 0
-    except Exception:
+    except Exception as error:
         logging.exception("Application startup failed")
-        _show_startup_error(log_path)
+        _show_startup_error(log_path, error)
         return 1
     finally:
         lock_file.close()

@@ -7,7 +7,7 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   package-windows:
@@ -37,6 +37,23 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: econ-paper-analyzer-windows-x64-checksum
-          path: dist/releases/v*/SHA256SUMS.txt
+          path: dist/releases/v*/econ-paper-analyzer-windows-x64-v*.sha256
           if-no-files-found: error
           retention-days: 30
+      - name: Attach packages to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $Tag = $env:GITHUB_REF_NAME
+          $Package = Get-ChildItem -Path dist/releases -Filter "econ-paper-analyzer-windows-x64-v*.zip" -Recurse | Select-Object -First 1
+          $Checksum = Get-ChildItem -Path dist/releases -Filter "econ-paper-analyzer-windows-x64-v*.sha256" -Recurse | Select-Object -First 1
+          if ($null -eq $Package -or $null -eq $Checksum) {
+            throw "Windows release assets were not created."
+          }
+          gh release view $Tag --repo $env:GITHUB_REPOSITORY 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $Tag --repo $env:GITHUB_REPOSITORY --title "Econ Paper Analyzer $Tag" --generate-notes
+          }
+          gh release upload $Tag $Package.FullName $Checksum.FullName --repo $env:GITHUB_REPOSITORY --clobber

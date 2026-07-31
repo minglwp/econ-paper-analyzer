@@ -47,8 +47,9 @@ $IconsetPath = Join-Path $BuildRoot "AppIcon.iconset"
 $PngPath = Join-Path $ProjectRoot "assets\app-icon.png"
 $ApplicationPath = Join-Path $PackageDist "econ-paper-analyzer"
 $ZipName = "econ-paper-analyzer-windows-x64-v$Version.zip"
+$ChecksumName = "econ-paper-analyzer-windows-x64-v$Version.sha256"
 $ZipPath = Join-Path $ReleaseStage $ZipName
-$ChecksumPath = Join-Path $ReleaseStage "SHA256SUMS.txt"
+$ChecksumPath = Join-Path $ReleaseStage $ChecksumName
 
 New-Item -ItemType Directory -Force -Path $BuildRoot, $ReleaseParent, $PackageDist, $ReleaseStage | Out-Null
 
@@ -88,7 +89,7 @@ try {
     Move-Item -LiteralPath $ReleaseStage -Destination $ReleaseRoot
     $ReleaseStage = $null
     Write-Host "Release: $(Join-Path $ReleaseRoot $ZipName)"
-    Write-Host "Checksums: $(Join-Path $ReleaseRoot 'SHA256SUMS.txt')"
+    Write-Host "Checksum: $(Join-Path $ReleaseRoot $ChecksumName)"
 }
 finally {
     if ($null -ne $ReleaseStage -and (Test-Path -LiteralPath $ReleaseStage)) {

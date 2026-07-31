@@ -29,6 +29,7 @@ def test_windows_packaging_script_creates_and_verifies_portable_zip() -> None:
     assert "PyInstaller" in source
     assert "Get-Command python -CommandType Application" in source
     assert "Select-Object -First 1 -ExpandProperty Path" in source
+    assert "econ-paper-analyzer-windows-x64-v$Version.sha256" in source
     assert "Compress-Archive" in source
     assert "Expand-Archive" in source
     assert "Get-FileHash -Algorithm SHA256" in source
@@ -40,3 +41,4 @@ def test_github_actions_builds_the_windows_package_on_a_native_runner() -> None:
     assert "runs-on: windows-latest" in source
     assert "./scripts/build_windows.ps1" in source
     assert "actions/upload-artifact@v4" in source
+    assert "gh release upload" in source

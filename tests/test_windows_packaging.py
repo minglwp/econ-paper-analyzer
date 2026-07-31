@@ -27,6 +27,7 @@ def test_pyinstaller_spec_selects_platform_specific_gui_backends() -> None:
 def test_windows_packaging_script_creates_and_verifies_portable_zip() -> None:
     source = (PROJECT_ROOT / "scripts" / "build_windows.ps1").read_text(encoding="utf-8")
     assert "PyInstaller" in source
+    assert "Get-Command python -CommandType Application" in source
     assert "Compress-Archive" in source
     assert "Expand-Archive" in source
     assert "Get-FileHash -Algorithm SHA256" in source

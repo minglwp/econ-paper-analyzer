@@ -10,7 +10,13 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $ProjectRoot
 
 if ([string]::IsNullOrWhiteSpace($Python)) {
-    $Python = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+    $ProjectPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+    if (Test-Path -LiteralPath $ProjectPython) {
+        $Python = $ProjectPython
+    }
+    else {
+        $Python = (Get-Command python -CommandType Application -ErrorAction Stop).Path
+    }
 }
 if (-not (Test-Path -LiteralPath $Python)) {
     throw "Build Python not found: $Python"

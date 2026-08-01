@@ -146,6 +146,7 @@ h3 {
 }
 
 .local-status,
+.draft-status,
 .selection-count,
 .job-badge,
 .heading-meta {
@@ -163,11 +164,37 @@ h3 {
   white-space: nowrap;
 }
 
-.local-status span {
+.local-status > span,
+.draft-indicator {
   width: 7px;
   height: 7px;
   background: var(--green);
   border-radius: 50%;
+}
+
+.draft-status[data-state="saving"] .draft-indicator {
+  background: var(--amber);
+}
+
+.draft-status[data-state="error"] {
+  color: var(--red);
+  background: var(--red-soft);
+  border-color: #f2c6c0;
+}
+
+.draft-status[data-state="error"] .draft-indicator {
+  background: var(--red);
+}
+
+.new-analysis-button {
+  color: var(--teal-dark);
+  border-color: #b7ceca;
+}
+
+.new-analysis-button:hover:not(:disabled) {
+  color: var(--teal-dark);
+  background: var(--teal-soft);
+  border-color: #8fbbb3;
 }
 
 .step-nav {
@@ -179,6 +206,43 @@ h3 {
   overflow-x: auto;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
+}
+
+.recovery-notice {
+  min-height: 48px;
+  padding: 8px max(24px, calc((100vw - var(--content)) / 2));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: #225c55;
+  background: var(--teal-soft);
+  border-bottom: 1px solid #bdded9;
+}
+
+.recovery-notice > div {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+
+.recovery-notice strong {
+  white-space: nowrap;
+}
+
+.recovery-notice span {
+  min-width: 0;
+  overflow: hidden;
+  color: #47736e;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recovery-notice .button {
+  flex: 0 0 auto;
+  color: #225c55;
 }
 
 .step-tab {
@@ -1725,7 +1789,20 @@ input[type="checkbox"]:checked::after {
   }
 
   .local-status,
-  #resetButton {
+  .draft-status {
+    display: none;
+  }
+
+  .topbar-actions {
+    gap: 4px;
+  }
+
+  .topbar-actions .button {
+    min-height: 32px;
+    padding: 5px 8px;
+  }
+
+  .brand-block p {
     display: none;
   }
 
@@ -1733,6 +1810,17 @@ input[type="checkbox"]:checked::after {
     min-height: 52px;
     padding: 0 8px;
     gap: 0;
+  }
+
+  .recovery-notice {
+    min-height: 44px;
+    padding: 6px 14px;
+    gap: 8px;
+  }
+
+  .recovery-notice > div {
+    gap: 4px;
+    flex-direction: column;
   }
 
   .step-tab {

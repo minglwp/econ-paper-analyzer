@@ -9,7 +9,7 @@ from PyInstaller.utils.hooks import collect_all, copy_metadata
 
 
 project_root = Path(SPECPATH)
-version = os.environ.get("EPA_APP_VERSION", "0.3.6")
+version = os.environ.get("EPA_APP_VERSION", "0.3.7")
 target_arch = os.environ.get("EPA_TARGET_ARCH", platform.machine())
 icon_path = Path(os.environ.get("EPA_ICON_PATH", project_root / "assets" / "app-icon.png"))
 

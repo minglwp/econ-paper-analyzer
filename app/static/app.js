@@ -6,7 +6,11 @@ const API = {
   analyze: "/api/analyze",
   job: (jobId) => `/api/jobs/${encodeURIComponent(jobId)}`,
   run: (runId) => `/api/runs/${encodeURIComponent(runId)}`,
-  dataset: (datasetId, sheetName) => `/api/datasets/${encodeURIComponent(datasetId)}?${new URLSearchParams({ sheet_name: sheetName })}`,
+  dataset: (datasetId, sheetName) => {
+    const path = `/api/datasets/${encodeURIComponent(datasetId)}`;
+    const selectedSheet = normalizeSheetName(sheetName);
+    return selectedSheet ? `${path}?${new URLSearchParams({ sheet_name: selectedSheet })}` : path;
+  },
 };
 
 const state = {
@@ -29,11 +33,18 @@ const savedJobKey = "econ-paper-analyzer:last-job";
 const maxPathModels = 20;
 const settingsFormat = "econ-paper-analyzer/settings";
 const settingsVersion = 1;
+const recoveryFormat = "econ-paper-analyzer/recovery";
+const recoveryVersion = 1;
+const recoveryStorageKey = "econ-paper-analyzer:recovery-v1";
 const isDesktopRuntime = window.__EPA_RUNTIME__ === "desktop";
 
 const els = {};
-let savedJobResumeStarted = false;
 let savedJobMemory = null;
+let workspaceRestoreStarted = false;
+let recoveryReady = false;
+let recoveryRestoring = false;
+let recoverySaveTimer = null;
+let recoverySaveQueue = Promise.resolve();
 
 document.addEventListener("DOMContentLoaded", () => {
   cacheElements();
@@ -45,6 +56,7 @@ document.addEventListener("DOMContentLoaded", () => {
 function cacheElements() {
   [
     "datasetContext", "resetButton", "settingsFileInput", "importSettingsButton", "exportSettingsButton",
+    "draftStatus", "draftStatusText", "recoveryNotice", "recoveryNoticeText", "dismissRecoveryNotice",
     "fileInput", "chooseFileButton", "uploadButton", "demoButton", "uploadZone",
     "fileLabel", "fileMeta", "uploadState", "uploadError", "dataReview", "dataCaption", "sheetField",
     "sheetSelect", "qualityStats", "columnCount", "columnQuality", "warningCount", "dataWarnings",
@@ -64,7 +76,7 @@ function bindEvents() {
   els.fileInput.addEventListener("change", (event) => selectFile(event.target.files[0]));
   els.uploadButton.addEventListener("click", handleUpload);
   els.demoButton.addEventListener("click", handleDemo);
-  els.resetButton.addEventListener("click", resetApplication);
+  els.resetButton.addEventListener("click", () => { void resetApplication(); });
   els.importSettingsButton.addEventListener("click", () => els.settingsFileInput.click());
   els.settingsFileInput.addEventListener("change", handleImportSettings);
   els.exportSettingsButton.addEventListener("click", () => { void exportSettings(); });
@@ -74,7 +86,8 @@ function bindEvents() {
   els.runAnalysisButton.addEventListener("click", handleRunAnalysis);
   els.rerunButton.addEventListener("click", handleRunAnalysis);
   els.backToSettings.addEventListener("click", () => showStep("analysis"));
-  els.sheetSelect.addEventListener("change", handleSheetChange);
+  els.sheetSelect.addEventListener("change", () => { void handleSheetChange(); });
+  els.dismissRecoveryNotice.addEventListener("click", () => els.recoveryNotice.classList.add("is-hidden"));
 
   document.querySelectorAll("[data-step-target]").forEach((button) => {
     button.addEventListener("click", () => showStep(button.dataset.stepTarget));
@@ -92,6 +105,9 @@ function bindEvents() {
   document.querySelectorAll("input[name='analysis']").forEach((input) => {
     input.addEventListener("change", updateAnalysisCount);
   });
+  document.addEventListener("input", persistEditedWorkspace, true);
+  document.addEventListener("change", persistEditedWorkspace, true);
+  window.addEventListener("pagehide", () => { void persistRecoverySnapshot(); });
 
   ["dragenter", "dragover"].forEach((eventName) => {
     els.uploadZone.addEventListener(eventName, (event) => {
@@ -115,20 +131,201 @@ function desktopBridge() {
 }
 
 function initializeDesktopBridge() {
-  const resumeOnce = () => {
-    if (savedJobResumeStarted) return;
-    savedJobResumeStarted = true;
-    void resumeSavedJob();
+  const restoreOnce = () => {
+    if (workspaceRestoreStarted) return;
+    workspaceRestoreStarted = true;
+    void initializeWorkspace();
   };
   if (!isDesktopRuntime) {
-    resumeOnce();
+    restoreOnce();
     return;
   }
   if (desktopBridge()) {
-    resumeOnce();
+    restoreOnce();
     return;
   }
-  window.addEventListener("pywebviewready", resumeOnce, { once: true });
+  window.addEventListener("pywebviewready", restoreOnce, { once: true });
+}
+
+async function initializeWorkspace() {
+  recoveryReady = true;
+  const restoredWorkspace = await restoreRecoverySnapshot();
+  if (!restoredWorkspace) await resumeSavedJob();
+}
+
+function persistEditedWorkspace(event) {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  if (target.matches("#sheetSelect") || target.closest("#step-variables, #step-analysis")) {
+    scheduleRecoverySave();
+  }
+}
+
+async function loadRecoverySnapshot() {
+  const bridge = desktopBridge();
+  if (bridge && typeof bridge.load_recovery_snapshot === "function") {
+    return bridge.load_recovery_snapshot();
+  }
+  try {
+    return JSON.parse(localStorage.getItem(recoveryStorageKey) || "null");
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function writeRecoverySnapshot(snapshot) {
+  const bridge = desktopBridge();
+  if (bridge && typeof bridge.save_recovery_snapshot === "function") {
+    return bridge.save_recovery_snapshot(snapshot);
+  }
+  localStorage.setItem(recoveryStorageKey, JSON.stringify(snapshot));
+  return { saved: true, saved_at: snapshot.saved_at };
+}
+
+async function clearRecoverySnapshot() {
+  const bridge = desktopBridge();
+  if (bridge && typeof bridge.clear_recovery_snapshot === "function") {
+    return bridge.clear_recovery_snapshot();
+  }
+  try {
+    localStorage.removeItem(recoveryStorageKey);
+  } catch (_error) {
+    // Browsers that block storage simply keep the current window state.
+  }
+  return { cleared: true };
+}
+
+function createSettingsDocument() {
+  if (!state.dataset) return null;
+  const { dataset_id: _datasetId, ...configuration } = collectAnalysisPayload();
+  return {
+    format: settingsFormat,
+    version: settingsVersion,
+    exported_at: new Date().toISOString(),
+    source: {
+      filename: state.dataset.filename,
+      sheet_name: normalizeSheetName(state.dataset.sheetName),
+    },
+    configuration,
+  };
+}
+
+function buildRecoverySnapshot() {
+  const settings = createSettingsDocument();
+  if (!settings || !state.dataset) return null;
+  return {
+    format: recoveryFormat,
+    version: recoveryVersion,
+    saved_at: new Date().toISOString(),
+    dataset: {
+      id: state.dataset.id,
+      filename: state.dataset.filename,
+      sheet_name: normalizeSheetName(els.sheetSelect.value, state.dataset.sheetName),
+    },
+    current_step: state.currentStep,
+    settings,
+    job: { job_id: state.jobId || "", run_id: state.runId || "" },
+  };
+}
+
+function queueRecovery(operation) {
+  const queued = recoverySaveQueue.catch(() => undefined).then(operation);
+  recoverySaveQueue = queued;
+  return queued;
+}
+
+function scheduleRecoverySave(delay = 700) {
+  if (!recoveryReady || recoveryRestoring || !state.dataset) return;
+  window.clearTimeout(recoverySaveTimer);
+  setDraftStatus("saving", "正在保存草稿");
+  recoverySaveTimer = window.setTimeout(() => { void persistRecoverySnapshot(); }, delay);
+}
+
+async function persistRecoverySnapshot() {
+  window.clearTimeout(recoverySaveTimer);
+  recoverySaveTimer = null;
+  if (!recoveryReady || recoveryRestoring || !state.dataset) return;
+  const snapshot = buildRecoverySnapshot();
+  if (!snapshot) return;
+  setDraftStatus("saving", "正在保存草稿");
+  await queueRecovery(async () => {
+    try {
+      const result = await writeRecoverySnapshot(snapshot);
+      if (state.dataset?.id === snapshot.dataset.id) {
+        setDraftStatus("saved", `已保存 ${formatSavedTime(result?.saved_at || snapshot.saved_at)}`);
+      }
+    } catch (error) {
+      if (state.dataset?.id === snapshot.dataset.id) {
+        setDraftStatus("error", "草稿保存失败");
+      }
+      console.error("Unable to save workspace recovery snapshot", error);
+    }
+  });
+}
+
+async function restoreRecoverySnapshot() {
+  let snapshot;
+  try {
+    snapshot = await loadRecoverySnapshot();
+  } catch (error) {
+    console.error("Unable to load workspace recovery snapshot", error);
+    return false;
+  }
+  if (!snapshot || snapshot.format !== recoveryFormat || snapshot.version !== recoveryVersion) {
+    setDraftStatus("idle", "草稿将自动保存");
+    return false;
+  }
+
+  recoveryRestoring = true;
+  setDraftStatus("saving", "正在恢复上次工作区");
+  try {
+    const settings = parseSettingsFile(snapshot.settings);
+    const raw = await getDatasetSheet(snapshot.dataset?.id, normalizeSheetName(snapshot.dataset?.sheet_name));
+    state.file = null;
+    state.dataset = normalizeUploadResponse(raw, { name: snapshot.dataset?.filename || raw.filename || "已恢复数据" });
+    if (!state.dataset.id) throw new Error("本地缓存中的数据已不可用。");
+    lockStepsAfter("variables");
+    renderDataset(state.dataset);
+    els.uploadState.textContent = "已从本地草稿恢复";
+    await applyImportedSettings(settings, { announce: false, persist: false, showStep: false });
+    restoreStepProgress(snapshot.current_step);
+    state.jobId = String(snapshot.job?.job_id || "");
+    state.runId = String(snapshot.job?.run_id || "");
+    setDraftStatus("saved", `已恢复 · ${formatSavedTime(snapshot.saved_at)}`);
+    els.recoveryNoticeText.textContent = `${state.dataset.filename} · ${formatInteger(state.dataset.rows)} 行 × ${formatInteger(state.dataset.columnTotal)} 列`;
+    els.recoveryNotice.classList.remove("is-hidden");
+    if (state.jobId || state.runId) {
+      rememberJob();
+      await resumeSavedJob();
+    }
+    return true;
+  } catch (error) {
+    setDraftStatus("error", "上次草稿无法恢复");
+    showToast(`未能恢复上次工作区：${error.message}`, true);
+    return false;
+  } finally {
+    recoveryRestoring = false;
+  }
+}
+
+function restoreStepProgress(step) {
+  const restoredStep = stepOrder.includes(step) ? step : "variables";
+  unlockStep("variables");
+  if (stepOrder.indexOf(restoredStep) >= stepOrder.indexOf("analysis")) unlockStep("analysis");
+  if (stepOrder.indexOf(restoredStep) >= stepOrder.indexOf("results")) unlockStep("results");
+  showStep(restoredStep);
+}
+
+function setDraftStatus(status, message) {
+  if (!els.draftStatus || !els.draftStatusText) return;
+  els.draftStatus.dataset.state = status;
+  els.draftStatusText.textContent = message;
+}
+
+function formatSavedTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "刚刚";
+  return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 }
 
 async function chooseDatasetFile() {
@@ -291,7 +488,7 @@ function normalizeUploadResponse(raw, file) {
   return {
     id: String(raw.dataset_id || raw.id || raw.dataset?.id || ""),
     filename: raw.filename || raw.file_name || file.name,
-    sheetName: raw.selected_sheet || raw.sheet_name || raw.active_sheet || sheets[0] || null,
+    sheetName: normalizeSheetName(raw.selected_sheet, raw.sheet_name, raw.active_sheet, sheets[0]),
     sheets: Array.isArray(sheets) ? sheets.map(String) : [],
     rows,
     columnTotal,
@@ -388,6 +585,7 @@ async function handleUpload() {
     renderDataset(state.dataset);
     unlockStep("variables");
     els.uploadState.textContent = "已就绪";
+    scheduleRecoverySave(0);
     showToast("数据已导入");
   } catch (error) {
     showAlert(els.uploadError, error.message);
@@ -414,6 +612,7 @@ async function handleDemo() {
     suggestedPathModels(raw.suggested_config || {}).forEach((model) => addPathModel(model, { focus: false }));
     els.datasetContext.textContent = `示例数据 · ${formatInteger(state.dataset.rows)} 行 × ${formatInteger(state.dataset.columnTotal)} 列`;
     els.uploadState.textContent = "示例已就绪";
+    scheduleRecoverySave(0);
     showToast("示例数据与模型配置已载入");
   } catch (error) {
     showAlert(els.uploadError, error.message);
@@ -463,7 +662,7 @@ function renderSheets(dataset) {
   els.sheetField.classList.remove("is-hidden");
 }
 
-async function handleSheetChange() {
+async function handleSheetChange(options = {}) {
   if (!state.dataset || !els.sheetSelect.value || els.sheetSelect.value === state.dataset.sheetName) return;
   const previousSheet = state.dataset.sheetName;
   const selectedSheet = els.sheetSelect.value;
@@ -478,6 +677,7 @@ async function handleSheetChange() {
     lockStepsAfter("variables");
     renderDataset(state.dataset);
     els.uploadState.textContent = "已就绪";
+    if (options.persist !== false) scheduleRecoverySave(0);
     showToast(`已切换至 ${selectedSheet}`);
   } catch (error) {
     els.sheetSelect.value = previousSheet || "";
@@ -606,12 +806,14 @@ function addScale(initial = {}) {
     refreshScaleIndices();
     refreshScaleItemPickers();
     updateModelOptions();
+    scheduleRecoverySave();
   });
   els.scaleList.append(editor);
   refreshScaleIndices();
   refreshScaleItemPickers();
   updateModelOptions();
   editor.querySelector(".scale-name").focus();
+  scheduleRecoverySave();
 }
 
 function questionColumnNames() {
@@ -668,6 +870,7 @@ function appendSelectedScaleItem(editor, item, reverse = false) {
     row.remove();
     refreshScaleItemPickers();
     validateScaleEditor(editor, false);
+    scheduleRecoverySave();
   });
   list.append(row);
 }
@@ -685,6 +888,7 @@ function assignScaleItems(editor) {
   items.forEach((item) => appendSelectedScaleItem(editor, item));
   refreshScaleItemPickers();
   validateScaleEditor(editor, false);
+  scheduleRecoverySave();
 }
 
 function unassignScaleItems(editor) {
@@ -693,6 +897,7 @@ function unassignScaleItems(editor) {
   rows.forEach((row) => row.remove());
   refreshScaleItemPickers();
   validateScaleEditor(editor, false);
+  scheduleRecoverySave();
 }
 
 function handleSelectedItemKeydown(event, editor) {
@@ -707,6 +912,7 @@ function handleSelectedItemKeydown(event, editor) {
     row.remove();
     refreshScaleItemPickers();
     validateScaleEditor(editor, false);
+    scheduleRecoverySave();
   }
 }
 
@@ -885,6 +1091,7 @@ function createSelectedModelControlRow(editor, item, selected = false) {
     refreshModelControlPicker(editor);
     validatePathModelEditor(editor, false);
     updateOrdinalConfirmations();
+    scheduleRecoverySave();
   });
   return row;
 }
@@ -936,6 +1143,7 @@ function assignModelControls(editor) {
   refreshModelControlPicker(editor, controls);
   validatePathModelEditor(editor, false);
   updateOrdinalConfirmations();
+  scheduleRecoverySave();
 }
 
 function unassignModelControls(editor) {
@@ -947,6 +1155,7 @@ function unassignModelControls(editor) {
   refreshModelControlPicker(editor, modelControlNames(editor).filter((name) => !selected.has(name)));
   validatePathModelEditor(editor, false);
   updateOrdinalConfirmations();
+  scheduleRecoverySave();
 }
 
 function handleSelectedModelControlKeydown(event, editor) {
@@ -962,6 +1171,7 @@ function handleSelectedModelControlKeydown(event, editor) {
     refreshModelControlPicker(editor);
     validatePathModelEditor(editor, false);
     updateOrdinalConfirmations();
+    scheduleRecoverySave();
   }
 }
 
@@ -1068,6 +1278,7 @@ function addPathModel(initial = {}, options = {}) {
   editor.querySelector(".remove-model").addEventListener("click", () => {
     editor.remove();
     refreshPathModelIndices();
+    scheduleRecoverySave();
   });
   editor.querySelector(".duplicate-model").addEventListener("click", () => {
     const copy = collectPathModel(editor);
@@ -1078,6 +1289,7 @@ function addPathModel(initial = {}, options = {}) {
   updateModelVisibility(editor);
   refreshPathModelIndices();
   if (options.focus !== false) editor.querySelector(".model-name").focus();
+  scheduleRecoverySave();
 }
 
 function duplicatePathModelName(name) {
@@ -1157,7 +1369,7 @@ function collectAnalysisPayload() {
   analyses.correlation = els.correlationMethod.value;
   return {
     dataset_id: state.dataset.id,
-    sheet_name: els.sheetSelect.value || state.dataset.sheetName || null,
+    sheet_name: normalizeSheetName(els.sheetSelect.value, state.dataset.sheetName),
     missing_codes: ["", 999],
     scales: collectScales(),
     models: collectPathModels(),
@@ -1179,17 +1391,8 @@ async function exportSettings() {
     showToast("请先导入数据后再导出配置。", true);
     return;
   }
-  const { dataset_id: _datasetId, ...configuration } = collectAnalysisPayload();
-  const settings = {
-    format: settingsFormat,
-    version: settingsVersion,
-    exported_at: new Date().toISOString(),
-    source: {
-      filename: state.dataset.filename,
-      sheet_name: state.dataset.sheetName || null,
-    },
-    configuration,
-  };
+  const settings = createSettingsDocument();
+  if (!settings) return;
   const filename = `经管论文分析配置-${new Date().toISOString().slice(0, 10)}.json`;
   const serialized = JSON.stringify(settings, null, 2);
   const bridge = desktopBridge();
@@ -1266,7 +1469,10 @@ function parseSettingsFile(raw) {
   };
 }
 
-async function applyImportedSettings(settings) {
+async function applyImportedSettings(settings, options = {}) {
+  const announce = options.announce !== false;
+  const persist = options.persist !== false;
+  const showTargetStep = options.showStep !== false;
   const configuration = settings.configuration;
   const requestedSheet = configuration.sheet_name;
   if (
@@ -1275,7 +1481,7 @@ async function applyImportedSettings(settings) {
     && state.dataset.sheets.includes(requestedSheet)
   ) {
     els.sheetSelect.value = requestedSheet;
-    await handleSheetChange();
+    await handleSheetChange({ persist: false });
   }
 
   clearVariableConfiguration();
@@ -1293,7 +1499,7 @@ async function applyImportedSettings(settings) {
   refreshPathModelIndices();
   unlockStep("variables");
   unlockStep("analysis");
-  showStep("variables");
+  if (showTargetStep) showStep("variables");
 
   const unavailable = collectUnavailableSettingsNames(configuration.scales, models);
   if (unavailable.length) {
@@ -1301,10 +1507,13 @@ async function applyImportedSettings(settings) {
       els.variableError,
       `已导入配置，但当前数据缺少以下字段：${unavailable.join("、")}。请补充或重新选择变量。`,
     );
-    return;
+    if (persist) scheduleRecoverySave(0);
+    return { unavailable, models };
   }
   const sourceName = settings.source.filename ? `（来源：${settings.source.filename}）` : "";
-  showToast(`已导入 ${configuration.scales.length} 个量表、${models.length} 条路径${sourceName}`);
+  if (announce) showToast(`已导入 ${configuration.scales.length} 个量表、${models.length} 条路径${sourceName}`);
+  if (persist) scheduleRecoverySave(0);
+  return { unavailable, models };
 }
 
 function applyAnalysisOptions(analyses, inference) {
@@ -1390,6 +1599,7 @@ async function handleRunAnalysis() {
   prepareJobView();
   unlockStep("results");
   showStep("results");
+  scheduleRecoverySave(0);
   try {
     const raw = await startAnalysis(payload);
     const job = normalizeJobResponse(raw, raw.job_id || raw.id);
@@ -1874,6 +2084,7 @@ function showStep(name) {
     else button.removeAttribute("aria-current");
   });
   window.scrollTo({ top: 0, behavior: "smooth" });
+  scheduleRecoverySave();
 }
 
 function unlockStep(name) {
@@ -1919,9 +2130,15 @@ function updateAnalysisCount() {
   const globalCount = document.querySelectorAll("input[name='analysis']:checked").length;
   const modelCount = els.pathModelList?.querySelectorAll(".path-model-editor").length || 0;
   els.analysisCount.textContent = `${globalCount} 项全局 · ${modelCount} 个路径`;
+  scheduleRecoverySave();
 }
 
-function resetApplication() {
+async function resetApplication() {
+  if (state.dataset && !window.confirm("新建分析会清空当前界面中的数据、量表和路径配置。已生成的结果文件与自动备份不会删除。是否继续？")) {
+    return;
+  }
+  window.clearTimeout(recoverySaveTimer);
+  recoverySaveTimer = null;
   clearTimeout(state.pollTimer);
   state.file = null;
   state.dataset = null;
@@ -1945,6 +2162,7 @@ function resetApplication() {
   els.pathModelList.replaceChildren();
   refreshScaleIndices();
   refreshPathModelIndices();
+  resetAnalysisOptions();
   [els.uploadError, els.variableError, els.analysisError, els.jobError].forEach(hideAlert);
   document.querySelectorAll("[data-step-target]").forEach((button, index) => {
     button.disabled = index !== 0;
@@ -1952,7 +2170,29 @@ function resetApplication() {
   });
   showStep("upload");
   updateSettingsButtons();
-  showToast("已重置分析");
+  els.recoveryNotice.classList.add("is-hidden");
+  setDraftStatus("idle", "新分析尚未保存");
+  try {
+    await queueRecovery(() => clearRecoverySnapshot());
+    showToast("已新建分析");
+  } catch (error) {
+    setDraftStatus("error", "未能清除上次草稿");
+    showToast(`新建分析后未能清除草稿：${error.message}`, true);
+  }
+}
+
+function resetAnalysisOptions() {
+  document.querySelectorAll("input[name='analysis']").forEach((input) => {
+    input.checked = input.defaultChecked;
+  });
+  [els.correlationMethod, els.ciMethod, els.robustSe].forEach((select) => {
+    const defaultOption = [...select.options].find((option) => option.defaultSelected) || select.options[0];
+    if (defaultOption) select.value = defaultOption.value;
+  });
+  [els.harmanThreshold, els.alphaInput, els.bootstrapInput, els.seedInput].forEach((input) => {
+    input.value = input.defaultValue;
+  });
+  updateAnalysisCount();
 }
 
 function rememberJob() {
@@ -1963,6 +2203,7 @@ function rememberJob() {
   } catch (_error) {
     // WKWebView pages created from in-memory HTML have an opaque origin.
   }
+  scheduleRecoverySave(0);
 }
 
 function forgetSavedJob() {
@@ -2037,6 +2278,15 @@ function normalizeMessages(value) {
     if (typeof item === "string") return item;
     return String(item.message || item.detail || item.label || item.stage || JSON.stringify(item));
   });
+}
+
+function normalizeSheetName(...values) {
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const name = value.trim();
+    if (name && name !== "undefined" && name !== "null") return name;
+  }
+  return null;
 }
 
 function firstNumber(...values) {

@@ -24,6 +24,33 @@ class FakeWindow:
         return self.responses.pop(0) if self.responses else None
 
 
+def recovery_snapshot() -> dict[str, object]:
+    return {
+        "format": "econ-paper-analyzer/recovery",
+        "version": 1,
+        "saved_at": "2026-08-01T08:30:00.000Z",
+        "dataset": {
+            "id": "dataset-0123456789",
+            "filename": "survey.csv",
+            "sheet_name": None,
+        },
+        "current_step": "analysis",
+        "settings": {
+            "format": "econ-paper-analyzer/settings",
+            "version": 1,
+            "source": {"filename": "survey.csv", "sheet_name": None},
+            "configuration": {
+                "sheet_name": None,
+                "scales": [],
+                "models": [],
+                "analyses": {"cfa": True},
+                "inference": {"alpha": 0.05},
+            },
+        },
+        "job": {"job_id": "job-012345", "run_id": ""},
+    }
+
+
 def test_desktop_bridge_imports_csv_without_http(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(desktop_bridge, "UPLOAD_ROOT", tmp_path)
     monkeypatch.setattr(main, "UPLOAD_ROOT", tmp_path)
@@ -64,12 +91,15 @@ def test_desktop_bridge_exposes_only_expected_public_methods() -> None:
     assert public_callables == {
         "analyze",
         "choose_dataset_file",
+        "clear_recovery_snapshot",
         "get_dataset",
         "get_job",
         "get_run",
+        "load_recovery_snapshot",
         "load_demo",
         "log_frontend_event",
         "save_artifact",
+        "save_recovery_snapshot",
         "save_settings",
         "upload_file",
     }
@@ -157,6 +187,56 @@ def test_desktop_save_dialog_cancellation_is_not_an_error(tmp_path: Path, monkey
     assert bridge.save_settings("settings.json", '{"ok": true}') == {"saved": False}
 
 
+def test_desktop_recovery_snapshot_is_atomic_and_clearable(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(desktop_bridge, "RUNTIME_ROOT", tmp_path)
+    bridge = desktop_bridge.DesktopBridge()
+    snapshot = recovery_snapshot()
+
+    result = bridge.save_recovery_snapshot(snapshot)
+    stored = tmp_path / "recovery" / "latest.json"
+
+    assert result == {"saved": True, "saved_at": snapshot["saved_at"]}
+    assert stored.is_file()
+    assert bridge.load_recovery_snapshot() == snapshot
+    assert not list((tmp_path / "recovery").glob("*.tmp"))
+    assert bridge.clear_recovery_snapshot() == {"cleared": True}
+    assert bridge.load_recovery_snapshot() is None
+
+
+def test_desktop_recovery_snapshot_rejects_invalid_or_oversize_content(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(desktop_bridge, "RUNTIME_ROOT", tmp_path)
+    bridge = desktop_bridge.DesktopBridge()
+
+    with pytest.raises(ValueError, match="格式"):
+        bridge.save_recovery_snapshot({})
+
+    oversized = recovery_snapshot()
+    oversized["settings"] = {
+        **oversized["settings"],
+        "configuration": {"payload": "x" * (2 * 1024 * 1024)},
+    }
+    with pytest.raises(ValueError, match="2 MB"):
+        bridge.save_recovery_snapshot(oversized)
+
+    recovery_file = tmp_path / "recovery" / "latest.json"
+    recovery_file.parent.mkdir(parents=True)
+    recovery_file.write_text("not-json", encoding="utf-8")
+    assert bridge.load_recovery_snapshot() is None
+
+
+def test_desktop_archives_latest_recovery_snapshot_on_close(tmp_path: Path) -> None:
+    latest = tmp_path / "recovery" / "latest.json"
+    latest.parent.mkdir(parents=True)
+    latest.write_text('{"workspace": true}', encoding="utf-8")
+
+    backup = desktop._archive_recovery_snapshot(tmp_path)
+
+    assert backup is not None
+    assert backup.parent == tmp_path / "backups"
+    assert backup.name.startswith("analysis-backup-")
+    assert backup.read_text(encoding="utf-8") == latest.read_text(encoding="utf-8")
+
+
 def test_desktop_bridge_translates_backend_validation_errors() -> None:
     def fail() -> dict[str, object]:
         raise HTTPException(status_code=422, detail=[{"msg": "字段无效"}])
@@ -234,6 +314,17 @@ def test_desktop_html_inlines_static_resources_and_bootstrap() -> None:
     assert 'window.addEventListener("error"' in html
     assert 'window.addEventListener("unhandledrejection"' in html
     assert 'window.addEventListener("pywebviewready"' in html
+
+
+def test_desktop_html_includes_workspace_recovery_controls() -> None:
+    html = desktop._desktop_html()
+
+    assert 'id="draftStatus"' in html
+    assert 'id="recoveryNotice"' in html
+    assert "新建分析" in html
+    assert "save_recovery_snapshot" in html
+    assert "load_recovery_snapshot" in html
+    assert "clear_recovery_snapshot" in html
 
 
 def test_desktop_removes_windows_download_zone_identifier(tmp_path: Path) -> None:

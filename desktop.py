@@ -4,8 +4,10 @@ import atexit
 import logging
 import multiprocessing
 import os
+import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import IO
 
@@ -235,6 +237,33 @@ def _desktop_html() -> str:
     return source
 
 
+def _archive_recovery_snapshot(runtime: Path, limit: int = 20) -> Path | None:
+    """Keep a dated copy of the latest workspace when a desktop window closes."""
+    source = runtime / "recovery" / "latest.json"
+    if not source.is_file():
+        return None
+
+    backup_dir = runtime / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        backup_dir.chmod(0o700)
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    target = backup_dir / f"analysis-backup-{stamp}.json"
+    sequence = 2
+    while target.exists():
+        target = backup_dir / f"analysis-backup-{stamp}-{sequence}.json"
+        sequence += 1
+    shutil.copy2(source, target)
+    if os.name != "nt":
+        target.chmod(0o600)
+
+    backups = sorted(backup_dir.glob("analysis-backup-*.json"))
+    for stale in backups[:-limit]:
+        stale.unlink(missing_ok=True)
+    return target
+
+
 def main() -> int:
     runtime, cache = _prepare_environment()
     log_path = runtime / "launcher.log"
@@ -284,6 +313,12 @@ def main() -> int:
         _show_startup_error(log_path, error)
         return 1
     finally:
+        try:
+            backup_path = _archive_recovery_snapshot(runtime)
+            if backup_path is not None:
+                logging.info("Archived workspace backup at %s", backup_path)
+        except OSError:
+            logging.exception("Could not archive workspace backup")
         lock_file.close()
 
 

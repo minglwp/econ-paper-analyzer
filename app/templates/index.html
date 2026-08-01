@@ -20,10 +20,13 @@
       </div>
       <div class="topbar-actions">
         <span class="local-status"><span aria-hidden="true"></span>本地运行</span>
+        <span class="draft-status" id="draftStatus" data-state="idle">
+          <span class="draft-indicator" aria-hidden="true"></span><span id="draftStatusText">草稿将自动保存</span>
+        </span>
         <input type="file" id="settingsFileInput" accept="application/json,.json" hidden>
         <button class="button button-quiet" type="button" id="importSettingsButton" disabled title="导入分析配置">导入</button>
         <button class="button button-quiet" type="button" id="exportSettingsButton" disabled title="导出当前分析配置">导出</button>
-        <button class="button button-quiet" type="button" id="resetButton">重新开始</button>
+        <button class="button button-secondary new-analysis-button" type="button" id="resetButton" title="清空当前工作区并开始新的数据分析">新建分析</button>
       </div>
     </header>
 
@@ -41,6 +44,14 @@
         <span class="step-number">4</span><span>运行与结果</span>
       </button>
     </nav>
+
+    <div class="recovery-notice is-hidden" id="recoveryNotice" role="status" aria-live="polite">
+      <div>
+        <strong>已恢复上次工作区</strong>
+        <span id="recoveryNoticeText"></span>
+      </div>
+      <button class="button button-quiet" type="button" id="dismissRecoveryNotice">知道了</button>
+    </div>
 
     <main class="main-content">
       <section class="step-panel is-active" id="step-upload" data-step="upload" aria-labelledby="uploadTitle">

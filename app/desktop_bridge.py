@@ -4,9 +4,11 @@ import base64
 import binascii
 import json
 import logging
+import os
 import re
 import shutil
 import threading
+import tempfile
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -15,7 +17,7 @@ from urllib.parse import urlsplit, urlunsplit
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from .config import ALLOWED_SUFFIXES, MAX_UPLOAD_BYTES, UPLOAD_ROOT
+from .config import ALLOWED_SUFFIXES, MAX_UPLOAD_BYTES, RUNTIME_ROOT, UPLOAD_ROOT
 from .data import write_json
 from .main import _dataset_response, _run_directory, job_status, load_demo_dataset, run_status, start_analysis
 from .schemas import AnalysisRequest
@@ -26,6 +28,11 @@ if TYPE_CHECKING:
 
 class DesktopBridge:
     """Expose the analysis service directly to the packaged WebKit window."""
+
+    _RECOVERY_FORMAT = "econ-paper-analyzer/recovery"
+    _RECOVERY_VERSION = 1
+    _RECOVERY_MAX_BYTES = 2 * 1024 * 1024
+    _RECOVERY_STEPS = {"upload", "variables", "analysis", "results"}
 
     def __init__(self) -> None:
         self._window: Window | None = None
@@ -127,6 +134,53 @@ class DesktopBridge:
         target.write_text(content, encoding="utf-8")
         return {"saved": True, "filename": target.name, "path": str(target)}
 
+    def save_recovery_snapshot(self, snapshot: Any) -> dict[str, Any]:
+        """Persist lightweight workspace state without duplicating uploaded data."""
+        normalized = self._validate_recovery_snapshot(snapshot)
+        serialized = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+        if len(serialized.encode("utf-8")) > self._RECOVERY_MAX_BYTES:
+            raise ValueError("恢复草稿超过 2 MB 限制")
+
+        target = self._recovery_path()
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=target.parent,
+            prefix=".latest-",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary.write(serialized)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_path = Path(temporary.name)
+        try:
+            os.replace(temporary_path, target)
+            if os.name != "nt":
+                target.chmod(0o600)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+        return {"saved": True, "saved_at": normalized["saved_at"]}
+
+    def load_recovery_snapshot(self) -> dict[str, Any] | None:
+        target = self._recovery_path(create=False)
+        if not target.is_file():
+            return None
+        try:
+            if target.stat().st_size > self._RECOVERY_MAX_BYTES:
+                raise ValueError("恢复草稿超过 2 MB 限制")
+            raw = json.loads(target.read_text(encoding="utf-8"))
+            return self._validate_recovery_snapshot(raw)
+        except (OSError, ValueError, json.JSONDecodeError, TypeError) as error:
+            logging.warning("Ignoring invalid recovery snapshot: %s", error)
+            return None
+
+    def clear_recovery_snapshot(self) -> dict[str, bool]:
+        target = self._recovery_path(create=False)
+        existed = target.is_file()
+        target.unlink(missing_ok=True)
+        return {"cleared": existed}
+
     def log_frontend_event(self, payload: Any) -> dict[str, bool]:
         try:
             event = self._sanitize_frontend_event(payload)
@@ -155,6 +209,79 @@ class DesktopBridge:
             return {"accepted": True}
         except Exception:
             return {"accepted": False}
+
+    @classmethod
+    def _validate_recovery_snapshot(cls, snapshot: Any) -> dict[str, Any]:
+        if not isinstance(snapshot, dict):
+            raise ValueError("恢复草稿格式不正确")
+        if snapshot.get("format") != cls._RECOVERY_FORMAT or snapshot.get("version") != cls._RECOVERY_VERSION:
+            raise ValueError("恢复草稿格式或版本不受支持")
+
+        dataset = snapshot.get("dataset")
+        settings = snapshot.get("settings")
+        job = snapshot.get("job", {})
+        current_step = snapshot.get("current_step")
+        saved_at = snapshot.get("saved_at")
+        if not isinstance(dataset, dict) or not isinstance(settings, dict) or not isinstance(job, dict):
+            raise ValueError("恢复草稿缺少工作区信息")
+        if current_step not in cls._RECOVERY_STEPS:
+            raise ValueError("恢复草稿的步骤无效")
+        if not isinstance(saved_at, str) or not saved_at or len(saved_at) > 64:
+            raise ValueError("恢复草稿的保存时间无效")
+
+        dataset_id = cls._bounded_recovery_text(dataset.get("id"), 128)
+        filename = cls._bounded_recovery_text(dataset.get("filename"), 512)
+        sheet_name = dataset.get("sheet_name")
+        if sheet_name is not None:
+            sheet_name = cls._bounded_recovery_text(sheet_name, 256)
+        if not dataset_id or not filename:
+            raise ValueError("恢复草稿缺少数据集信息")
+        if not isinstance(settings.get("configuration"), dict):
+            raise ValueError("恢复草稿缺少分析配置")
+        if settings.get("format") != "econ-paper-analyzer/settings" or settings.get("version") != 1:
+            raise ValueError("恢复草稿中的分析配置无效")
+        source = settings.get("source", {})
+        if not isinstance(source, dict):
+            raise ValueError("恢复草稿中的数据来源无效")
+
+        job_id = cls._bounded_recovery_text(job.get("job_id", ""), 128, allow_empty=True)
+        run_id = cls._bounded_recovery_text(job.get("run_id", ""), 128, allow_empty=True)
+        return {
+            "format": cls._RECOVERY_FORMAT,
+            "version": cls._RECOVERY_VERSION,
+            "saved_at": saved_at,
+            "dataset": {
+                "id": dataset_id,
+                "filename": filename,
+                "sheet_name": sheet_name,
+            },
+            "current_step": current_step,
+            "settings": {
+                "format": "econ-paper-analyzer/settings",
+                "version": 1,
+                "source": source,
+                "configuration": settings["configuration"],
+            },
+            "job": {"job_id": job_id, "run_id": run_id},
+        }
+
+    @staticmethod
+    def _bounded_recovery_text(value: Any, limit: int, allow_empty: bool = False) -> str:
+        if not isinstance(value, str):
+            raise ValueError("恢复草稿包含无效文本")
+        text = value.strip()
+        if len(text) > limit or (not text and not allow_empty):
+            raise ValueError("恢复草稿包含无效文本")
+        return text
+
+    @staticmethod
+    def _recovery_path(create: bool = True) -> Path:
+        recovery_dir = RUNTIME_ROOT / "recovery"
+        if create:
+            recovery_dir.mkdir(parents=True, exist_ok=True)
+            if os.name != "nt":
+                recovery_dir.chmod(0o700)
+        return recovery_dir / "latest.json"
 
     @classmethod
     def _sanitize_frontend_event(cls, payload: Any) -> dict[str, Any] | None:

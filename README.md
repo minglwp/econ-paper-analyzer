@@ -21,3 +21,13 @@
 - **Windows x64**：提供免安装 `.zip` 和安装版 `-setup.exe`。
 
 请在 [Releases](https://github.com/minglwp/econ-paper-analyzer/releases) 页面下载对应系统的最新版本。
+
+## 赞赏支持
+
+如果使用体验还不错，欢迎自愿赞赏，支持后续维护与功能改进。感谢每一位使用者的支持。
+
+<p align="center">
+  <strong>微信支付</strong>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<strong>支付宝</strong><br>
+  <img src="assets/donation/wechat-pay.png" alt="微信支付收款码" width="260">&nbsp;&nbsp;
+  <img src="assets/donation/alipay.jpg" alt="支付宝收款码" width="260">
+</p>
